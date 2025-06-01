@@ -1,3 +1,12 @@
+## vUnreleased
+
+- Update README.md by @ragebreaker
+- Update release.yml by @ragebreaker
+- Create auto-update-changelog.yml for testing by @ragebreaker
+- Create test.yml by @ragebreaker
+- Create release.yml by @ragebreaker
+
+
 # Changelog
 
 ## v1.0.2
