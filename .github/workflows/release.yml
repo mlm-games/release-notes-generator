@@ -127,6 +127,9 @@ jobs:
 
       - name: Update major version tag
         run: |
+
+          git config --global user.email "github@example.com"
+          git config --global user.name "github actions"
           MAJOR_VERSION=$(echo "${{ steps.extract-version.outputs.version }}" | cut -d. -f1)
           git tag -fa "v${MAJOR_VERSION}" -m "Update major version tag"
           git push origin "v${MAJOR_VERSION}" --force
