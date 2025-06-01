@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (e.g., 1.2.3)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate version format
+        run: |
+          if ! [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Version must be in format X.Y.Z"
+            exit 1
+          fi
+
+      - name: Check if tag exists
+        run: |
+          if git rev-parse "v${{ inputs.version }}" >/dev/null 2>&1; then
+            echo "Error: Tag v${{ inputs.version }} already exists"
+            exit 1
+          fi
+
+      - name: Generate Release Notes
+        id: release-notes
+        uses: ./
+        with:
+          version: ${{ inputs.version }}
+          changelog-path: 'CHANGELOG.md'
+          format: '- {{subject}} by @{{author}}'
+          exclude-patterns: 'chore:,ci:,docs:,Update release notes,Merge pull request'
+          auto-commit: 'false'
+
+      - name: Update version in action.yml
+        run: |
+          # Update any version references in documentation
+          sed -i "s/multi-release-notes@v[0-9]\+\.[0-9]\+\.[0-9]\+/multi-release-notes@v${{ inputs.version }}/g" README.md
+          sed -i "s/multi-release-notes@v[0-9]\+/multi-release-notes@v${{ inputs.version }}/g" README.md
+
+      - name: Create Pull Request
+        id: create-pr
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'chore: release v${{ inputs.version }}'
+          title: 'Release v${{ inputs.version }}'
+          body: |
+            ## Release v${{ inputs.version }}
+            
+            ### Release Notes
+            ${{ steps.release-notes.outputs.release-notes }}
+            
+            ### Checklist
+            - [ ] Review CHANGELOG.md entry
+            - [ ] Verify version references in README.md
+            - [ ] Test the action locally
+            
+            After merging this PR, the release will be automatically created.
+          branch: release/v${{ inputs.version }}
+          delete-branch: true
+          labels: release
+
+      - name: Enable auto-merge
+        if: steps.create-pr.outputs.pull-request-number
+        run: |
+          gh pr merge ${{ steps.create-pr.outputs.pull-request-number }} --auto --squash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  create-release:
+    needs: release
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true && startsWith(github.head_ref, 'release/')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from branch name
+        id: extract-version
+        run: |
+          VERSION=$(echo "${{ github.head_ref }}" | sed 's/release\/v//')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Get release notes from CHANGELOG
+        id: get-notes
+        run: |
+          # Extract the specific version section from CHANGELOG.md
+          sed -n "/## v${{ steps.extract-version.outputs.version }}/,/## v/p" CHANGELOG.md | sed '$d' > release-notes.txt
+          
+          # Store in output
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
+          cat release-notes.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.extract-version.outputs.version }}
+          name: v${{ steps.extract-version.outputs.version }}
+          body: ${{ steps.get-notes.outputs.notes }}
+          draft: false
+          prerelease: ${{ github.event.inputs.prerelease || false }}
+          generate_release_notes: false
+
+      - name: Update major version tag
+        run: |
+          MAJOR_VERSION=$(echo "${{ steps.extract-version.outputs.version }}" | cut -d. -f1)
+          git tag -fa "v${MAJOR_VERSION}" -m "Update major version tag"
+          git push origin "v${MAJOR_VERSION}" --force
