@@ -14,7 +14,7 @@ A GitHub Action that generates and manages release notes across multiple platfor
 ## Quick Start
 
 ```yaml
-- uses: your-username/multi-release-notes@v1.0.2.0.2
+- uses: your-username/multi-release-notes@v1.0.2
   with:
     version: '1.2.3'
     changelog-path: 'CHANGELOG.md'
@@ -51,7 +51,7 @@ A GitHub Action that generates and manages release notes across multiple platfor
 
 ### Basic Usage
 ```yaml
-- uses: your-username/multi-release-notes@v1.0.2.0.2
+- uses: your-username/multi-release-notes@v1.0.2
   with:
     version: ${{ github.event.inputs.version }}
 ```
