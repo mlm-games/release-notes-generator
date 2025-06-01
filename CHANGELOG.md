@@ -1,3 +1,10 @@
+## v1.0.3
+
+- Update release.yml to fix readme vername duplication by @ragebreaker
+- Update README.md by @ragebreaker
+- Update README.md by @ragebreaker
+
+
 ## vUnreleased
 
 - Update README.md by @ragebreaker
