@@ -14,7 +14,7 @@ A GitHub Action that generates and manages release notes across multiple platfor
 ## Quick Start
 
 ```yaml
-- uses: your-username/multi-release-notes@v1.0.3
+- uses: your-username/multi-release-notes@v1.0.4
   with:
     version: '1.2.3'
     changelog-path: 'CHANGELOG.md'
@@ -51,7 +51,7 @@ A GitHub Action that generates and manages release notes across multiple platfor
 
 ### Basic Usage
 ```yaml
-- uses: your-username/multi-release-notes@v1.0.3
+- uses: your-username/multi-release-notes@v1.0.4
   with:
     version: ${{ github.event.inputs.version }}
 ```
@@ -59,7 +59,7 @@ A GitHub Action that generates and manages release notes across multiple platfor
 ### Full Integration
 ```yaml
 - name: Generate Release Notes
-  uses: your-username/multi-release-notes@v1.0.3
+  uses: your-username/multi-release-notes@v1.0.4
   id: release-notes
   with:
     version: ${{ github.event.inputs.version }}
@@ -81,7 +81,7 @@ A GitHub Action that generates and manages release notes across multiple platfor
 
 ### Android/Fastlane Only
 ```yaml
-- uses: your-username/multi-release-notes@v1.0.3
+- uses: your-username/multi-release-notes@v1.0.4
   with:
     version: '2.0.0'
     version-file-path: './fastlane/metadata/android/en-US/changelogs/200.txt'
@@ -91,7 +91,7 @@ A GitHub Action that generates and manages release notes across multiple platfor
 
 ### Flathub Release
 ```yaml
-- uses: your-username/multi-release-notes@v1.0.3
+- uses: your-username/multi-release-notes@v1.0.4
   with:
     version: '1.5.0'
     metainfo-path: './data/io.github.myapp.metainfo.xml'
