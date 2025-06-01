@@ -1,3 +1,9 @@
+## v1.0.5
+
+- Update release.yml by @ragebreaker
+- revert  CHANGELOG.md by @ragebreaker
+
+
 ## v1.0.2
 
 - Update release.yml by @ragebreaker
