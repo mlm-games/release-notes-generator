@@ -138,6 +138,12 @@ Supports fallbacks with pipes: `{{author|committer}}`
 </releases>
 ```
 
+## Common issues
+
+If you get an error related to labels (no permmision for labels), then just add this line in the permissions section of the workflow
+
+```issues: write```
+
 ## License
 
 MIT
