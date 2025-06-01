@@ -1,0 +1,303 @@
+name: 'multi-release-notes'
+description: 'Generate release notes for CHANGELOG.md, version files, and various release platforms'
+author: 'mlm-games'
+
+inputs:
+  version:
+    description: 'Version number (e.g., 1.2.3)'
+    required: true
+  head-ref:
+    description: 'Custom head ref'
+    required: false
+    default: 'HEAD'
+  changelog-path:
+    description: 'Path to CHANGELOG.md'
+    required: false
+    default: 'CHANGELOG.md'
+  version-file-path:
+    description: 'Path to version file (e.g., fastlane/vercode.txt)'
+    required: false
+    default: ''
+  version-code:
+    description: 'Version code for Android/Fastlane'
+    required: false
+    default: ''
+  metainfo-path:
+    description: 'Path to Flathub metainfo.xml file'
+    required: false
+    default: ''
+  format:
+    description: 'Release note format'
+    required: false
+    default: '- {{subject}} by @{{author}}'
+  exclude-patterns:
+    description: 'Comma-separated patterns to exclude from commits'
+    required: false
+    default: 'Update version to,Merge ,Auto-generate changelog'
+  auto-commit:
+    description: 'Automatically commit changes'
+    required: false
+    default: 'true'
+  commit-message:
+    description: 'Commit message template'
+    required: false
+    default: 'Update release notes for v{{version}}'
+
+outputs:
+  release-notes:
+    description: 'Generated release notes'
+  release-name:
+    description: 'Release name (latest commit subject)'
+  changelog-updated:
+    description: 'Whether CHANGELOG.md was updated'
+  files-changed:
+    description: 'List of files that were changed'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Generate Release Notes
+      id: generate
+      shell: bash
+      run: |
+        # Get the latest tag
+        LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+        
+        if [ -z "$LATEST_TAG" ]; then
+          echo "No previous tags found, getting all commits"
+          COMMIT_RANGE="HEAD"
+        else
+          echo "Getting commits since $LATEST_TAG"
+          COMMIT_RANGE="${LATEST_TAG}..${{ inputs.head-ref }}"
+        fi
+        
+        # Parse exclude patterns
+        IFS=',' read -ra EXCLUDE_ARRAY <<< "${{ inputs.exclude-patterns }}"
+        GREP_ARGS=""
+        for pattern in "${EXCLUDE_ARRAY[@]}"; do
+          GREP_ARGS="$GREP_ARGS --grep=\"^${pattern}\" --invert-grep"
+        done
+        
+        # Get commits and format them
+        COMMITS=$(eval "git log $COMMIT_RANGE --oneline --no-merges $GREP_ARGS --pretty=format:'%H|%an|%cn|%s|%b'")
+        
+        # Generate formatted release notes
+        RELEASE_NOTES=""
+        RELEASE_NAME=""
+        FIRST=true
+        
+        while IFS='|' read -r hash author committer subject body; do
+          if [ -n "$hash" ]; then
+            # Format the commit note
+            NOTE="${{ inputs.format }}"
+            NOTE="${NOTE//\{\{subject\}\}/$subject}"
+            NOTE="${NOTE//\{\{author\}\}/$author}"
+            NOTE="${NOTE//\{\{committer\}\}/$committer}"
+            NOTE="${NOTE//\{\{message\}\}/$subject $body}"
+            
+            # Handle piped values (e.g., {{author|committer}})
+            while [[ $NOTE =~ \{\{([a-z\|]+)\}\} ]]; do
+              PLACEHOLDER="${BASH_REMATCH[0]}"
+              VALUES="${BASH_REMATCH[1]}"
+              IFS='|' read -ra VALUE_ARRAY <<< "$VALUES"
+              
+              REPLACEMENT=""
+              for value in "${VALUE_ARRAY[@]}"; do
+                case $value in
+                  "subject") REPLACEMENT="$subject" ;;
+                  "author") REPLACEMENT="$author" ;;
+                  "committer") REPLACEMENT="$committer" ;;
+                  "message") REPLACEMENT="$subject $body" ;;
+                esac
+                if [ -n "$REPLACEMENT" ]; then
+                  break
+                fi
+              done
+              
+              if [ -n "$REPLACEMENT" ]; then
+                NOTE="${NOTE//$PLACEHOLDER/$REPLACEMENT}"
+              fi
+            done
+            
+            RELEASE_NOTES="${RELEASE_NOTES}${NOTE}\n"
+            
+            if [ "$FIRST" = true ]; then
+              RELEASE_NAME="$subject"
+              FIRST=false
+            fi
+          fi
+        done <<< "$COMMITS"
+        
+        # Remove trailing newline
+        RELEASE_NOTES="${RELEASE_NOTES%\\n}"
+        
+        # Output results
+        echo "release-notes<<EOF" >> $GITHUB_OUTPUT
+        echo -e "$RELEASE_NOTES" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+        echo "release-name=$RELEASE_NAME" >> $GITHUB_OUTPUT
+        
+        # Save to file for later steps
+        echo -e "$RELEASE_NOTES" > /tmp/release-notes.txt
+
+    - name: Update CHANGELOG.md
+      if: inputs.changelog-path != ''
+      id: changelog
+      shell: bash
+      run: |
+        CHANGELOG_PATH="${{ inputs.changelog-path }}"
+        VERSION="${{ inputs.version }}"
+        UPDATED="false"
+        
+        if [ -f "$CHANGELOG_PATH" ]; then
+          # Check if version already exists
+          if grep -q "## v${VERSION}" "$CHANGELOG_PATH"; then
+            echo "Version ${VERSION} already exists in ${CHANGELOG_PATH}"
+          else
+            # Create new changelog entry
+            {
+              echo "## v${VERSION}"
+              echo ""
+              cat /tmp/release-notes.txt
+              echo ""
+              echo ""
+              cat "$CHANGELOG_PATH"
+            } > /tmp/new-changelog.md
+            
+            mv /tmp/new-changelog.md "$CHANGELOG_PATH"
+            UPDATED="true"
+            echo "Updated ${CHANGELOG_PATH}"
+          fi
+        else
+          # Create new CHANGELOG.md
+          {
+            echo "# Changelog"
+            echo ""
+            echo "## v${VERSION}"
+            echo ""
+            cat /tmp/release-notes.txt
+            echo ""
+          } > "$CHANGELOG_PATH"
+          UPDATED="true"
+          echo "Created ${CHANGELOG_PATH}"
+        fi
+        
+        echo "changelog-updated=$UPDATED" >> $GITHUB_OUTPUT
+
+    - name: Update Version File
+      if: inputs.version-file-path != '' && inputs.version-code != ''
+      shell: bash
+      run: |
+        VERSION_FILE="${{ inputs.version-file-path }}"
+        VERSION_CODE="${{ inputs.version-code }}"
+        
+        # Create directory if it doesn't exist
+        mkdir -p "$(dirname "$VERSION_FILE")"
+        
+        # For Fastlane changelog format
+        if [[ "$VERSION_FILE" == *"/changelogs/"* ]]; then
+          cat /tmp/release-notes.txt > "$VERSION_FILE"
+        else
+          # For simple version files
+          echo "$VERSION_CODE" > "$VERSION_FILE"
+        fi
+        
+        echo "Updated version file: $VERSION_FILE"
+
+    - name: Update Flathub Metainfo
+      if: inputs.metainfo-path != ''
+      shell: bash
+      run: |
+        METAINFO_PATH="${{ inputs.metainfo-path }}"
+        VERSION="${{ inputs.version }}"
+        
+        if [ -f "$METAINFO_PATH" ]; then
+          # Create release entry
+          RELEASE_ENTRY="    <release version=\"${VERSION}\" date=\"$(date +%Y-%m-%d)\">\n"
+          RELEASE_ENTRY="${RELEASE_ENTRY}      <description>\n"
+          RELEASE_ENTRY="${RELEASE_ENTRY}        <ul>\n"
+          
+          # Convert release notes to list items
+          while IFS= read -r line; do
+            if [ -n "$line" ]; then
+              # Remove leading dash and trim
+              ITEM=$(echo "$line" | sed 's/^- //' | sed 's/^[[:space:]]*//')
+              RELEASE_ENTRY="${RELEASE_ENTRY}          <li>${ITEM}</li>\n"
+            fi
+          done < /tmp/release-notes.txt
+          
+          RELEASE_ENTRY="${RELEASE_ENTRY}        </ul>\n"
+          RELEASE_ENTRY="${RELEASE_ENTRY}      </description>\n"
+          RELEASE_ENTRY="${RELEASE_ENTRY}    </release>"
+          
+          # Insert after <releases> tag
+          if grep -q "<releases>" "$METAINFO_PATH"; then
+            # Check if version already exists
+            if grep -q "version=\"${VERSION}\"" "$METAINFO_PATH"; then
+              echo "Version ${VERSION} already exists in ${METAINFO_PATH}"
+            else
+              # Insert the new release after <releases>
+              sed -i "/<releases>/a\\${RELEASE_ENTRY}" "$METAINFO_PATH"
+              echo "Updated ${METAINFO_PATH}"
+            fi
+          else
+            echo "Warning: <releases> tag not found in ${METAINFO_PATH}"
+          fi
+        else
+          echo "Warning: Metainfo file not found at ${METAINFO_PATH}"
+        fi
+
+    - name: Collect Changed Files
+      id: files
+      shell: bash
+      run: |
+        CHANGED_FILES=""
+        
+        if [ "${{ steps.changelog.outputs.changelog-updated }}" = "true" ]; then
+          CHANGED_FILES="${{ inputs.changelog-path }}"
+        fi
+        
+        if [ -n "${{ inputs.version-file-path }}" ] && [ -n "${{ inputs.version-code }}" ]; then
+          if [ -n "$CHANGED_FILES" ]; then
+            CHANGED_FILES="$CHANGED_FILES,${{ inputs.version-file-path }}"
+          else
+            CHANGED_FILES="${{ inputs.version-file-path }}"
+          fi
+        fi
+        
+        if [ -n "${{ inputs.metainfo-path }}" ] && [ -f "${{ inputs.metainfo-path }}" ]; then
+          if [ -n "$CHANGED_FILES" ]; then
+            CHANGED_FILES="$CHANGED_FILES,${{ inputs.metainfo-path }}"
+          else
+            CHANGED_FILES="${{ inputs.metainfo-path }}"
+          fi
+        fi
+        
+        echo "files-changed=$CHANGED_FILES" >> $GITHUB_OUTPUT
+
+    - name: Commit Changes
+      if: inputs.auto-commit == 'true' && steps.files.outputs.files-changed != ''
+      shell: bash
+      run: |
+        # Configure git
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Actions"
+        
+        # Add changed files
+        IFS=',' read -ra FILES <<< "${{ steps.files.outputs.files-changed }}"
+        for file in "${FILES[@]}"; do
+          if [ -f "$file" ]; then
+            git add "$file"
+          fi
+        done
+        
+        # Commit with custom message
+        COMMIT_MSG="${{ inputs.commit-message }}"
+        COMMIT_MSG="${COMMIT_MSG//\{\{version\}\}/${{ inputs.version }}}"
+        
+        git commit -m "$COMMIT_MSG" || echo "No changes to commit"
+        git push || echo "Nothing to push"
+
+branding:
+  icon: 'file-text'
+  color: 'blue'
