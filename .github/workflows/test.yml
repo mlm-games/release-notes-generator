@@ -1,0 +1,104 @@
+name: Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-action:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        test-case:
+          - name: "Basic CHANGELOG"
+            version: "1.0.0"
+            changelog-path: "test/CHANGELOG.md"
+          - name: "With Fastlane"
+            version: "2.0.0"
+            version-file-path: "test/fastlane/changelogs/200.txt"
+            version-code: "200"
+          - name: "With Metainfo"
+            version: "3.0.0"
+            metainfo-path: "test/app.metainfo.xml"
+          - name: "Custom Format"
+            version: "4.0.0"
+            format: "* {{subject}} ({{author|committer}})"
+          - name: "No Auto-commit"
+            version: "5.0.0"
+            auto-commit: "false"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create test environment
+        run: |
+          mkdir -p test/fastlane/changelogs
+          echo "# Test Changelog" > test/CHANGELOG.md
+          
+          cat > test/app.metainfo.xml << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <component type="desktop-application">
+            <id>com.example.test</id>
+            <releases>
+            </releases>
+          </component>
+          EOF
+
+      - name: Test - ${{ matrix.test-case.name }}
+        id: test
+        uses: ./
+        with:
+          version: ${{ matrix.test-case.version }}
+          changelog-path: ${{ matrix.test-case.changelog-path || '' }}
+          version-file-path: ${{ matrix.test-case.version-file-path || '' }}
+          version-code: ${{ matrix.test-case.version-code || '' }}
+          metainfo-path: ${{ matrix.test-case.metainfo-path || '' }}
+          format: ${{ matrix.test-case.format || '- {{subject}} by @{{author}}' }}
+          auto-commit: ${{ matrix.test-case.auto-commit || 'false' }}
+
+      - name: Verify outputs
+        run: |
+          echo "Release Notes:"
+          echo "${{ steps.test.outputs.release-notes }}"
+          echo ""
+          echo "Release Name: ${{ steps.test.outputs.release-name }}"
+          echo "Changelog Updated: ${{ steps.test.outputs.changelog-updated }}"
+          echo "Files Changed: ${{ steps.test.outputs.files-changed }}"
+
+      - name: Check generated files
+        run: |
+          if [ -n "${{ matrix.test-case.changelog-path }}" ] && [ -f "${{ matrix.test-case.changelog-path }}" ]; then
+            echo "=== CHANGELOG.md ==="
+            cat "${{ matrix.test-case.changelog-path }}"
+          fi
+          
+          if [ -n "${{ matrix.test-case.version-file-path }}" ] && [ -f "${{ matrix.test-case.version-file-path }}" ]; then
+            echo "=== Version File ==="
+            cat "${{ matrix.test-case.version-file-path }}"
+          fi
+          
+          if [ -n "${{ matrix.test-case.metainfo-path }}" ] && [ -f "${{ matrix.test-case.metainfo-path }}" ]; then
+            echo "=== Metainfo XML ==="
+            cat "${{ matrix.test-case.metainfo-path }}"
+          fi
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate action.yml
+        run: |
+          # Check if action.yml is valid YAML
+          python3 -c "import yaml; yaml.safe_load(open('action.yml'))"
+
+      - name: Check shell scripts
+        run: |
+          # Find all shell scripts and check syntax
+          find . -name "*.sh" -type f -exec bash -n {} \;
