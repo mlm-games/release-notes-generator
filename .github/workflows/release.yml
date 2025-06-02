@@ -82,6 +82,7 @@ jobs:
 
       - name: Update major version tag
         run: |
+          github config user.name "${{ github.actor }}"
           MAJOR_VERSION=$(echo "${{ inputs.version }}" | cut -d. -f1)
           git tag -fa "v${MAJOR_VERSION}" -m "Update major version tag"
           git push origin "v${MAJOR_VERSION}" --force
