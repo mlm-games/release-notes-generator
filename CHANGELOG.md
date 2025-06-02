@@ -1,3 +1,8 @@
+## v1.1.0
+
+- Update action.yml by @ragebreaker
+
+
 ## vUnreleased
 
 - Update action.yml by @ragebreaker
