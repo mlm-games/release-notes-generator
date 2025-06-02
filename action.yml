@@ -1,4 +1,4 @@
-name: 'multi-release-notes'
+name: 'release-notes-generator'
 description: 'Generate release notes for CHANGELOG.md, version files, and various release platforms'
 author: 'mlm-games'
 
