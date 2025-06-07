@@ -1,3 +1,10 @@
+## v1.1.1
+
+- Update action.yml by @ragebreaker
+- Update README.md by @ragebreaker
+- Update release.yml by @ragebreaker
+
+
 ## v1.1.0
 
 - Update action.yml by @ragebreaker
