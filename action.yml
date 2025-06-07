@@ -59,10 +59,7 @@ runs:
     - name: Generate Release Notes
       id: generate
       shell: bash
-      # Use pipefail to ensure the script fails if any command in a pipeline fails
       run: |
-        set -o pipefail
-        
         # Get the latest tag
         LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
         
@@ -74,86 +71,71 @@ runs:
           COMMIT_RANGE="${LATEST_TAG}..${{ inputs.head-ref }}"
         fi
         
-        # Safely parse exclude patterns into a grep argument array (avoids using eval)
+        # Parse exclude patterns
         IFS=',' read -ra EXCLUDE_ARRAY <<< "${{ inputs.exclude-patterns }}"
-        GREP_ARGS=()
+        GREP_ARGS=""
         for pattern in "${EXCLUDE_ARRAY[@]}"; do
-          # Trim whitespace from pattern
-          pattern=$(echo "$pattern" | xargs)
-          if [ -n "$pattern" ]; then
-            GREP_ARGS+=(--grep="^${pattern}" --invert-grep)
-          fi
+          GREP_ARGS="$GREP_ARGS --grep=\"^${pattern}\" --invert-grep"
         done
         
-        # We use a NULL character (%x00) to separate commits and a Unit Separator character (%x1f)
-        # to separate fields within a commit. This is robust against newlines in commit bodies.
+        # Get commits and format them
+        COMMITS=$(eval "git log $COMMIT_RANGE --oneline --no-merges $GREP_ARGS --pretty=format:'%H|%an|%cn|%s|%b'")
         
+        # Generate formatted release notes
         RELEASE_NOTES=""
         RELEASE_NAME=""
         FIRST=true
-
-        # The < <(...) is process substitution. The while loop reads from the git log command.
-        # read -r -d $'\x1f' reads until it hits the field separator.
-        # read -r -d '' reads the final field (the body) until it hits the NULL character.
-        while IFS= read -r -d '' commit_data; do
-          # Read fields separated by Unit Separator
-          IFS=$'\x1f' read -r hash author committer subject body <<< "$commit_data"
-
-          # Format the commit note
-          NOTE="${{ inputs.format }}"
-          NOTE="${NOTE//\{\{subject\}\}/$subject}"
-          NOTE="${NOTE//\{\{author\}\}/$author}"
-          NOTE="${NOTE//\{\{committer\}\}/$committer}"
-          # For {{message}}, combine subject and body. Add a newline if body exists.
-          if [ -n "$body" ]; then
-              message_content="$subject\n$body"
-          else
-              message_content="$subject"
-          fi
-          NOTE="${NOTE//\{\{message\}\}/$message_content}"
-          
-          # Handle piped values (e.g., {{author|committer}}) - this logic remains the same
-          while [[ $NOTE =~ \{\{([a-zA-Z0-9_\|]+)\}\} ]]; do
-            PLACEHOLDER="${BASH_REMATCH[0]}"
-            VALUES="${BASH_REMATCH[1]}"
-            IFS='|' read -ra VALUE_ARRAY <<< "$VALUES"
+        
+        while IFS='|' read -r hash author committer subject body; do
+          if [ -n "$hash" ]; then
+            # Format the commit note
+            NOTE="${{ inputs.format }}"
+            NOTE="${NOTE//\{\{subject\}\}/$subject}"
+            NOTE="${NOTE//\{\{author\}\}/$author}"
+            NOTE="${NOTE//\{\{committer\}\}/$committer}"
+            NOTE="${NOTE//\{\{message\}\}/$subject $body}"
             
-            REPLACEMENT=""
-            for value in "${VALUE_ARRAY[@]}"; do
-              case $value in
-                "subject") REPLACEMENT="$subject" ;;
-                "author") REPLACEMENT="$author" ;;
-                "committer") REPLACEMENT="$committer" ;;
-                "message") REPLACEMENT="$message_content" ;;
-              esac
+            # Handle piped values (e.g., {{author|committer}})
+            while [[ $NOTE =~ \{\{([a-z\|]+)\}\} ]]; do
+              PLACEHOLDER="${BASH_REMATCH[0]}"
+              VALUES="${BASH_REMATCH[1]}"
+              IFS='|' read -ra VALUE_ARRAY <<< "$VALUES"
+              
+              REPLACEMENT=""
+              for value in "${VALUE_ARRAY[@]}"; do
+                case $value in
+                  "subject") REPLACEMENT="$subject" ;;
+                  "author") REPLACEMENT="$author" ;;
+                  "committer") REPLACEMENT="$committer" ;;
+                  "message") REPLACEMENT="$subject $body" ;;
+                esac
+                if [ -n "$REPLACEMENT" ]; then
+                  break
+                fi
+              done
+              
               if [ -n "$REPLACEMENT" ]; then
-                break
+                NOTE="${NOTE//$PLACEHOLDER/$REPLACEMENT}"
               fi
             done
             
-            if [ -n "$REPLACEMENT" ]; then
-              NOTE="${NOTE//$PLACEHOLDER/$REPLACEMENT}"
+            RELEASE_NOTES="${RELEASE_NOTES}${NOTE}\n"
+            
+            if [ "$FIRST" = true ]; then
+              RELEASE_NAME="$subject"
+              FIRST=false
             fi
-          done
-          
-          RELEASE_NOTES+="${NOTE}\n"
-          
-          if [ "$FIRST" = true ]; then
-            RELEASE_NAME="$subject"
-            FIRST=false
           fi
-        done < <(git log $COMMIT_RANGE --no-merges "${GREP_ARGS[@]}" --pretty=format:"%H%x1f%an%x1f%cn%x1f%s%x1f%b%x00")
-
-        # Remove trailing newline
-        RELEASE_NOTES=$(echo -e "$RELEASE_NOTES" | sed '/^$/d' | head -c -1)
+        done <<< "$COMMITS"
         
-        # Use a Here Document for multiline output to GITHUB_OUTPUT, which is safer.
-        {
-          echo "release-notes<<EOF"
-          echo "$RELEASE_NOTES"
-          echo "EOF"
-          echo "release-name=$RELEASE_NAME"
-        } >> "$GITHUB_OUTPUT"
+        # Remove trailing newline
+        RELEASE_NOTES="${RELEASE_NOTES%\\n}"
+        
+        # Output results
+        echo "release-notes<<EOF" >> $GITHUB_OUTPUT
+        echo -e "$RELEASE_NOTES" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+        echo "release-name=$RELEASE_NAME" >> $GITHUB_OUTPUT
         
         # Save to file for later steps
         echo -e "$RELEASE_NOTES" > /tmp/release-notes.txt
