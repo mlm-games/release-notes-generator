@@ -140,6 +140,9 @@ runs:
         # Save to file for later steps
         echo -e "$RELEASE_NOTES" > /tmp/release-notes.txt
 
+        echo "For debugging,"
+        cat /tmp/release-notes.txt
+
     - name: Update CHANGELOG.md
       if: inputs.changelog-path != ''
       id: changelog
