@@ -79,14 +79,20 @@ runs:
         done
         
         # Get commits and format them
-        COMMITS=$(eval "git log $COMMIT_RANGE --oneline --no-merges $GREP_ARGS --pretty=format:'%H|%an|%cn|%s|%b'")
-        
+        if [ -n "$GREP_ARGS" ]; then
+          COMMITS=$(eval "git log $COMMIT_RANGE --no-merges $GREP_ARGS --pretty=format:'%H|%an|%cn|%s|%b'")
+        else
+          COMMITS=$(git log $COMMIT_RANGE --no-merges --pretty=format:'%H|%an|%cn|%s|%b')
+        fi
+                
         # Generate formatted release notes
         RELEASE_NOTES=""
         RELEASE_NAME=""
         FIRST=true
         
-        while IFS='|' read -r hash author committer subject body; do
+        while IFS= read -r line; do
+          if [ -n "$line" ]; then
+            IFS='|' read -r hash author committer subject body <<< "$line"
           if [ -n "$hash" ]; then
             # Format the commit note
             NOTE="${{ inputs.format }}"
