@@ -70,6 +70,14 @@ runs:
           echo "Getting commits since $LATEST_TAG"
           COMMIT_RANGE="${LATEST_TAG}..${{ inputs.head-ref }}"
         fi
+
+        echo "Debug: COMMIT_RANGE=$COMMIT_RANGE"
+        echo "Debug: Number of commits found: $(echo "$COMMITS" | wc -l)"
+        echo "Debug: Raw commits output:"
+        echo "$COMMITS"
+        echo "Debug: First few commits:"
+        echo "$COMMITS" | head -5
+        echo "---"
         
         # Parse exclude patterns
         IFS=',' read -ra EXCLUDE_ARRAY <<< "${{ inputs.exclude-patterns }}"
@@ -93,46 +101,48 @@ runs:
         while IFS= read -r line; do
           if [ -n "$line" ]; then
             IFS='|' read -r hash author committer subject body <<< "$line"
-          if [ -n "$hash" ]; then
-            # Format the commit note
-            NOTE="${{ inputs.format }}"
-            NOTE="${NOTE//\{\{subject\}\}/$subject}"
-            NOTE="${NOTE//\{\{author\}\}/$author}"
-            NOTE="${NOTE//\{\{committer\}\}/$committer}"
-            NOTE="${NOTE//\{\{message\}\}/$subject $body}"
-            
-            # Handle piped values (e.g., {{author|committer}})
-            while [[ $NOTE =~ \{\{([a-z\|]+)\}\} ]]; do
-              PLACEHOLDER="${BASH_REMATCH[0]}"
-              VALUES="${BASH_REMATCH[1]}"
-              IFS='|' read -ra VALUE_ARRAY <<< "$VALUES"
+            if [ -n "$hash" ]; then
+              # Format the commit note
+              NOTE="${{ inputs.format }}"
+              NOTE="${NOTE//\{\{subject\}\}/$subject}"
+              NOTE="${NOTE//\{\{author\}\}/$author}"
+              NOTE="${NOTE//\{\{committer\}\}/$committer}"
+              NOTE="${NOTE//\{\{message\}\}/$subject $body}"
               
-              REPLACEMENT=""
-              for value in "${VALUE_ARRAY[@]}"; do
-                case $value in
-                  "subject") REPLACEMENT="$subject" ;;
-                  "author") REPLACEMENT="$author" ;;
-                  "committer") REPLACEMENT="$committer" ;;
-                  "message") REPLACEMENT="$subject $body" ;;
-                esac
+              # Handle piped values (e.g., {{author|committer}})
+              while [[ $NOTE =~ \{\{([a-z\|]+)\}\} ]]; do
+                PLACEHOLDER="${BASH_REMATCH[0]}"
+                VALUES="${BASH_REMATCH[1]}"
+                IFS='|' read -ra VALUE_ARRAY <<< "$VALUES"
+                
+                REPLACEMENT=""
+                for value in "${VALUE_ARRAY[@]}"; do
+                  case $value in
+                    "subject") REPLACEMENT="$subject" ;;
+                    "author") REPLACEMENT="$author" ;;
+                    "committer") REPLACEMENT="$committer" ;;
+                    "message") REPLACEMENT="$subject $body" ;;
+                  esac
+                  if [ -n "$REPLACEMENT" ]; then
+                    break
+                  fi
+                done
+                
                 if [ -n "$REPLACEMENT" ]; then
-                  break
+                  NOTE="${NOTE//$PLACEHOLDER/$REPLACEMENT}"
                 fi
               done
               
-              if [ -n "$REPLACEMENT" ]; then
-                NOTE="${NOTE//$PLACEHOLDER/$REPLACEMENT}"
+              RELEASE_NOTES="${RELEASE_NOTES}${NOTE}\n"
+              
+              if [ "$FIRST" = true ]; then
+                RELEASE_NAME="$subject"
+                FIRST=false
               fi
-            done
-            
-            RELEASE_NOTES="${RELEASE_NOTES}${NOTE}\n"
-            
-            if [ "$FIRST" = true ]; then
-              RELEASE_NAME="$subject"
-              FIRST=false
             fi
-          fi
+          fi  
         done <<< "$COMMITS"
+
         
         # Remove trailing newline
         RELEASE_NOTES="${RELEASE_NOTES%\\n}"
@@ -148,6 +158,8 @@ runs:
 
         echo "For debugging,"
         cat /tmp/release-notes.txt
+
+        
 
     - name: Update CHANGELOG.md
       if: inputs.changelog-path != ''
