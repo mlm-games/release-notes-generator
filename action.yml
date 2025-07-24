@@ -29,7 +29,7 @@ inputs:
   format:
     description: 'Release note format'
     required: false
-    default: '- {{subject}} by @{{author}}'
+    default: '- {{subject}}' # by @{{author}} is anther common usecase
   exclude-patterns:
     description: 'Comma-separated patterns to exclude from commits'
     required: false
