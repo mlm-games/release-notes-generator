@@ -16,10 +16,6 @@
 - Update action.yml by @ragebreaker
 
 
-## vUnreleased
-
-- Update action.yml by @ragebreaker
-
 
 ## v1.0.5
 
