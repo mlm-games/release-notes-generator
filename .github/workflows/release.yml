@@ -51,19 +51,19 @@ jobs:
           format: '- {{subject}} by @{{author}}'
           exclude-patterns: 'chore:,ci:,docs:,Update release notes,Merge pull request'
           auto-commit: 'false'
+          debug: 'false'
 
-      - name: Update version in action.yml
+      - name: Update version in README usage
         run: |
-          # Update any version references in documentation
-          sed -i "s/multi-release-notes@v[0-9]\+\.[0-9]\+\.[0-9]\+/multi-release-notes@v${{ inputs.version }}/g" README.md
-          sed -i "s/multi-release-notes@v[0-9]\+\.[0-9]\+\.[0-9]\+/multi-release-notes@v${{ inputs.version }}/g" README.md
+          # Update version pin in README examples (keep separate major-tag examples)
+          sed -i -E "s#mlm-games/release-notes-generator@v[0-9]+\.[0-9]+\.[0-9]+#mlm-games/release-notes-generator@v${{ inputs.version }}#g" README.md
 
       - name: Commit changes
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Actions"
           git add .
-          git commit -m "chore: release v${{ inputs.version }}"
+          git commit -m "chore: release v${{ inputs.version }}" || echo "No changes to commit"
 
       - name: Create tag and push
         run: |
@@ -82,7 +82,8 @@ jobs:
 
       - name: Update major version tag
         run: |
-          github config user.name "${{ github.actor }}"
-          MAJOR_VERSION=$(echo "${{ inputs.version }}" | cut -d. -f1)
-          git tag -fa "v${MAJOR_VERSION}" -m "Update major version tag"
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          MAJOR_VERSION="$(echo "${{ inputs.version }}" | cut -d. -f1)"
+          git tag -fa "v${MAJOR_VERSION}" -m "Update major version tag (v${{ inputs.version }})"
           git push origin "v${MAJOR_VERSION}" --force

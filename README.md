@@ -1,6 +1,6 @@
 # Multi-Release Notes Action
 
-A GitHub Action that generates and manages release notes across multiple platforms and formats - CHANGELOG.md, version files, GitHub releases, Flathub metainfo.xml, and more.
+A GitHub Action that generates and manages release notes across multiple platforms and formats — CHANGELOG.md, version files, GitHub releases, Flathub metainfo.xml, and more.
 
 ## Features
 
@@ -9,12 +9,14 @@ A GitHub Action that generates and manages release notes across multiple platfor
 - 📱 Creates Android/Fastlane changelog files
 - 🐧 Updates Flathub metainfo.xml release entries
 - 🔄 Supports custom commit formats and exclusion patterns
+- 🧪 Robust parsing (handles multiline messages and “|” safely)
+- 🧰 Optional debug output
 - 💾 Auto-commits changes (optional)
 
 ## Quick Start
 
 ```yaml
-- uses: mlm-games/release-notes-generator@v1.1.0
+- uses: mlm-games/release-notes-generator@v1
   with:
     version: '1.2.3'
     changelog-path: 'CHANGELOG.md'
@@ -29,14 +31,15 @@ A GitHub Action that generates and manages release notes across multiple platfor
 |-------|----------|---------|-------------|
 | `version` | ✅ | - | Version number (e.g., 1.2.3) |
 | `changelog-path` | ❌ | `CHANGELOG.md` | Path to CHANGELOG.md |
-| `version-file-path` | ❌ | - | Path to version/changelog file |
-| `version-code` | ❌ | - | Version code for Android/Fastlane |
-| `metainfo-path` | ❌ | - | Path to Flathub metainfo.xml |
+| `version-file-path` | ❌ | `""` | Path to version/changelog file |
+| `version-code` | ❌ | `""` | Version code for Android/Fastlane |
+| `metainfo-path` | ❌ | `""` | Path to Flathub metainfo.xml |
 | `head-ref` | ❌ | `HEAD` | Git ref to generate notes from |
-| `format` | ❌ | `- {{subject}} by @{{author}}` | Commit format template |
-| `exclude-patterns` | ❌ | `Update version to,Merge ,Auto-generate changelog` | Comma-separated patterns to exclude |
+| `format` | ❌ | `- {{subject}}` | Commit format template |
+| `exclude-patterns` | ❌ | `Update version to,Merge ,Auto-generate changelog` | Comma-separated patterns to exclude (anchored to subject) |
 | `auto-commit` | ❌ | `true` | Auto-commit changes |
 | `commit-message` | ❌ | `Update release notes for v{{version}}` | Commit message template |
+| `debug` | ❌ | `false` | Print debug info in logs |
 
 ## Outputs
 
@@ -51,7 +54,7 @@ A GitHub Action that generates and manages release notes across multiple platfor
 
 ### Basic Usage
 ```yaml
-- uses: mlm-games/release-notes-generator@v1.1.0
+- uses: mlm-games/release-notes-generator@v1
   with:
     version: ${{ github.event.inputs.version }}
 ```
@@ -59,7 +62,7 @@ A GitHub Action that generates and manages release notes across multiple platfor
 ### Full Integration
 ```yaml
 - name: Generate Release Notes
-  uses: mlm-games/release-notes-generator@v1.1.0
+  uses: mlm-games/release-notes-generator@v1
   id: release-notes
   with:
     version: ${{ github.event.inputs.version }}
@@ -70,18 +73,11 @@ A GitHub Action that generates and manages release notes across multiple platfor
     format: '- {{subject}} ({{author}})'
     exclude-patterns: 'chore:,ci:,Update version'
     auto-commit: 'true'
-
-- name: Create GitHub Release
-  uses: softprops/action-gh-release@v2
-  with:
-    tag_name: v${{ github.event.inputs.version }}
-    body: ${{ steps.release-notes.outputs.release-notes }}
-    name: ${{ steps.release-notes.outputs.release-name }}
 ```
 
 ### Android/Fastlane Only
 ```yaml
-- uses: mlm-games/release-notes-generator@v1.1.0
+- uses: mlm-games/release-notes-generator@v1
   with:
     version: '2.0.0'
     version-file-path: './fastlane/metadata/android/en-US/changelogs/200.txt'
@@ -91,7 +87,7 @@ A GitHub Action that generates and manages release notes across multiple platfor
 
 ### Flathub Release
 ```yaml
-- uses: mlm-games/release-notes-generator@v1.1.0
+- uses: mlm-games/release-notes-generator@v1
   with:
     version: '1.5.0'
     metainfo-path: './data/io.github.myapp.metainfo.xml'
@@ -104,7 +100,7 @@ Use these placeholders in the `format` input:
 - `{{subject}}` - Commit subject line
 - `{{author}}` - Commit author username
 - `{{committer}}` - Committer username
-- `{{message}}` - Full commit message
+- `{{message}}` - Full message (single-line subject + body)
 
 Supports fallbacks with pipes: `{{author|committer}}`
 
@@ -140,9 +136,11 @@ Supports fallbacks with pipes: `{{author|committer}}`
 
 ## Common issues
 
-If you get an error related to labels (no permmision for labels), then just add this line in the permissions section of the workflow
+If you get an error related to labels (no permission for labels), add this to your workflow permissions:
 
-```issues: write```
+```
+issues: write
+```
 
 ## License
 
