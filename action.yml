@@ -172,12 +172,12 @@ runs:
         
         if [ -f "$CHANGELOG_PATH" ]; then
           # Check if version already exists
-          if grep -q "## v${VERSION}" "$CHANGELOG_PATH"; then
+          if grep -q "## ${VERSION}" "$CHANGELOG_PATH"; then
             echo "Version ${VERSION} already exists in ${CHANGELOG_PATH}"
           else
             # Create new changelog entry
             {
-              echo "## v${VERSION}"
+              echo "## ${VERSION}"
               echo ""
               cat /tmp/release-notes.txt
               echo ""
@@ -194,7 +194,7 @@ runs:
           {
             echo "# Changelog"
             echo ""
-            echo "## v${VERSION}"
+            echo "## ${VERSION}"
             echo ""
             cat /tmp/release-notes.txt
             echo ""
