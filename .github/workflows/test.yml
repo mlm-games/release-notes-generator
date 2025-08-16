@@ -98,16 +98,16 @@ jobs:
         run: |
           # Validate YAML if PyYAML is available; otherwise skip without failing
           python3 - <<'PY'
-import sys
-try:
-    import yaml  # type: ignore
-    with open('action.yml','r',encoding='utf-8') as f:
-        yaml.safe_load(f)
-    print('action.yml is valid YAML')
-except Exception as e:
-    print('Skipping YAML validation or non-fatal validation issue:', e)
-    sys.exit(0)
-PY
+          import sys
+          try:
+              import yaml  # type: ignore
+              with open('action.yml','r',encoding='utf-8') as f:
+                  yaml.safe_load(f)
+              print('action.yml is valid YAML')
+          except Exception as e:
+              print('Skipping YAML validation or non-fatal validation issue:', e)
+              sys.exit(0)
+          PY
 
       - name: Check shell scripts
         run: |
