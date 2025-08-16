@@ -67,16 +67,21 @@ runs:
         set -Eeuo pipefail
 
         HEAD_REF="${{ inputs.head-ref }}"
+
+        # Determine tags and commit range (handles "HEAD is at a tag" case)
         LATEST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
-        if [ -n "$LATEST_TAG" ]; then
-          RANGE=("$LATEST_TAG..${HEAD_REF}")
-        else
-          RANGE=() # all commits
+        HEAD_TAG="$(git describe --tags --exact-match "${HEAD_REF}" 2>/dev/null || true)"
+        PREV_TAG=""
+        if [ -n "$HEAD_TAG" ]; then
+          PREV_TAG="$(git describe --tags --abbrev=0 --exclude="$HEAD_TAG" 2>/dev/null || true)"
         fi
 
-        # NUL-separated fields to be robust to pipes/newlines in messages
-        # Fields: hash, author, committer, subject, body (then NUL)
-        COMMITS="$(git log -z "${RANGE[@]}" --no-merges --pretty=format:'%H%x00%an%x00%cn%x00%s%x00%b%x00')"
+        RANGE=()  # default: all commits
+        if [ -n "$HEAD_TAG" ] && [ -n "$PREV_TAG" ]; then
+          RANGE=("$PREV_TAG..${HEAD_REF}")
+        elif [ -z "$HEAD_TAG" ] && [ -n "$LATEST_TAG" ]; then
+          RANGE=("$LATEST_TAG..${HEAD_REF}")
+        fi
 
         # Build anchored, regex-safe exclusion regex from comma-separated list
         RAW="${{ inputs.exclude-patterns }}"
@@ -95,64 +100,75 @@ runs:
         RELEASE_NOTES=""
         RELEASE_NAME=""
 
-        # Iterate 5 NUL-delimited fields at a time
-        # shellcheck disable=SC2034
-        {
-          while :; do
-            IFS= read -r -d '' hash || break
-            IFS= read -r -d '' author || break
-            IFS= read -r -d '' committer || break
-            IFS= read -r -d '' subject || break
-            IFS= read -r -d '' body || break
+        # Stream NUL-delimited fields directly from git to avoid losing data in variables
+        # Fields: hash, author, committer, subject, body (then NUL)
+        exec 3< <(git log -z "${RANGE[@]}" --no-merges --pretty=format:'%H%x00%an%x00%cn%x00%s%x00%b%x00')
 
-            # Apply exclusion against subject
-            if [ -n "$EX_REGEX" ] && printf '%s' "$subject" | grep -Eq "$EX_REGEX"; then
-              continue
-            fi
+        while :; do
+          IFS= read -r -d '' hash <&3 || break
+          IFS= read -r -d '' author <&3 || break
+          IFS= read -r -d '' committer <&3 || break
+          IFS= read -r -d '' subject <&3 || break
+          IFS= read -r -d '' body <&3 || break
 
-            tpl='${{ inputs.format }}'
-            # message = one-line "subject + body"
-            msg="$(printf '%s %s' "$subject" "$body" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g' | sed -E 's/[[:space:]]+$//')"
+          # Apply exclusion against subject (anchored)
+          if [ -n "$EX_REGEX" ] && printf '%s' "$subject" | grep -Eq "$EX_REGEX"; then
+            continue
+          fi
 
-            # simple placeholders
-            tpl="${tpl//\{\{subject\}\}/$subject}"
-            tpl="${tpl//\{\{author\}\}/$author}"
-            tpl="${tpl//\{\{committer\}\}/$committer}"
-            tpl="${tpl//\{\{message\}\}/$msg}"
+          tpl='${{ inputs.format }}'
 
-            # fallbacks: {{a|b|c}}
-            while [[ "$tpl" =~ \{\{([^}]+)\}\} ]]; do
-              ph="${BASH_REMATCH[1]}"
-              IFS='|' read -ra opts <<< "$ph"
-              rep=""
-              for opt in "${opts[@]}"; do
-                case "$opt" in
-                  subject) rep="$subject" ;;
-                  author) rep="$author" ;;
-                  committer) rep="$committer" ;;
-                  message) rep="$msg" ;;
-                esac
-                [ -n "$rep" ] && break
-              done
-              tpl="${tpl//\{\{$ph\}\}/$rep}"
+          # message = one-line "subject + body"
+          msg="$(printf '%s %s' "$subject" "$body" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g' | sed -E 's/[[:space:]]+$//')"
+
+          # Simple placeholders
+          tpl="${tpl//\{\{subject\}\}/$subject}"
+          tpl="${tpl//\{\{author\}\}/$author}"
+          tpl="${tpl//\{\{committer\}\}/$committer}"
+          tpl="${tpl//\{\{message\}\}/$msg}"
+
+          # Fallbacks: {{a|b|c}}
+          while [[ "$tpl" =~ \{\{([^}]+)\}\} ]]; do
+            ph="${BASH_REMATCH[1]}"
+            IFS='|' read -ra opts <<< "$ph"
+            rep=""
+            for opt in "${opts[@]}"; do
+              case "$opt" in
+                subject)   rep="$subject" ;;
+                author)    rep="$author" ;;
+                committer) rep="$committer" ;;
+                message)   rep="$msg" ;;
+              esac
+              [ -n "$rep" ] && break
             done
-
-            RELEASE_NOTES+="${tpl}"$'\n'
-            [ -z "$RELEASE_NAME" ] && RELEASE_NAME="$subject"
+            tpl="${tpl//\{\{$ph\}\}/$rep}"
           done
-        } <<< "$COMMITS"
 
+          RELEASE_NOTES+="${tpl}"$'\n'
+          [ -z "$RELEASE_NAME" ] && RELEASE_NAME="$subject"
+        done
+
+        exec 3<&-
+
+        # Trim trailing newline
         RELEASE_NOTES="${RELEASE_NOTES%$'\n'}"
 
         if [ "${{ inputs.debug }}" = "true" ]; then
           echo "Latest tag: ${LATEST_TAG}"
           echo "Head ref: ${HEAD_REF}"
-          echo "Exclude regex: ${EX_REGEX}"
+          echo "Head tag (if any): ${HEAD_TAG}"
+          echo "Previous tag (if head is tagged): ${PREV_TAG}"
+          if [ "${#RANGE[@]}" -eq 0 ]; then
+            echo "Computed range: <all commits>"
+          else
+            echo "Computed range: ${RANGE[*]}"
+          fi
+          echo "Exclude regex: ${EX_REGEX:-<none>}"
           echo "Preview (first 20 lines):"
           printf '%s\n' "$RELEASE_NOTES" | head -20
         fi
 
-        # Use a unique delimiter to avoid "matching delimiter not found" errs
+        # Output to GITHUB_OUTPUT safely using a unique delimiter
         DELIM="END_OF_RELEASE_NOTES_$(date +%s%N)_$RANDOM"
         {
           printf 'release-notes<<%s\n' "$DELIM"
@@ -161,6 +177,7 @@ runs:
           printf 'release-name=%s\n' "$RELEASE_NAME"
         } >> "$GITHUB_OUTPUT"
 
+        # Save to file for later steps
         printf '%s\n' "$RELEASE_NOTES" > /tmp/release-notes.txt
 
     - name: Update CHANGELOG.md
@@ -172,15 +189,24 @@ runs:
         CHANGELOG_PATH="${{ inputs.changelog-path }}"
         VERSION="${{ inputs.version }}"
         UPDATED="false"
-        
+
+        # Helper: write notes or fallback bullet
+        write_notes() {
+          if [ -s /tmp/release-notes.txt ]; then
+            cat /tmp/release-notes.txt
+          else
+            echo "- No changes since previous release"
+          fi
+        }
+
         if [ -f "$CHANGELOG_PATH" ]; then
-          if grep -q "## ${VERSION}" "$CHANGELOG_PATH"; then
+          if grep -q "## v${VERSION}" "$CHANGELOG_PATH"; then
             echo "Version ${VERSION} already exists in ${CHANGELOG_PATH}"
           else
             {
-              echo "## ${VERSION}"
+              echo "## v${VERSION}"
               echo ""
-              cat /tmp/release-notes.txt
+              write_notes
               echo ""
               echo ""
               cat "$CHANGELOG_PATH"
@@ -193,16 +219,16 @@ runs:
           {
             echo "# Changelog"
             echo ""
-            echo "## ${VERSION}"
+            echo "## v${VERSION}"
             echo ""
-            cat /tmp/release-notes.txt
+            write_notes
             echo ""
           } > "$CHANGELOG_PATH"
           UPDATED="true"
           echo "Created ${CHANGELOG_PATH}"
         fi
-        
-        echo "changelog-updated=$UPDATED" >> $GITHUB_OUTPUT
+
+        echo "changelog-updated=$UPDATED" >> "$GITHUB_OUTPUT"
 
     - name: Update Version File
       if: inputs.version-file-path != '' && inputs.version-code != ''
@@ -212,13 +238,15 @@ runs:
         VERSION_FILE="${{ inputs.version-file-path }}"
         VERSION_CODE="${{ inputs.version-code }}"
         mkdir -p "$(dirname "$VERSION_FILE")"
-        
+
         if [[ "$VERSION_FILE" == *"/changelogs/"* ]]; then
+          # For Fastlane-style per-build changelog files
           cat /tmp/release-notes.txt > "$VERSION_FILE"
         else
+          # For simple numeric version code files
           echo "$VERSION_CODE" > "$VERSION_FILE"
         fi
-        
+
         echo "Updated version file: $VERSION_FILE"
 
     - name: Update Flathub Metainfo
@@ -228,21 +256,24 @@ runs:
         set -Eeuo pipefail
         METAINFO_PATH="${{ inputs.metainfo-path }}"
         VERSION="${{ inputs.version }}"
-        
+
         if [ -f "$METAINFO_PATH" ]; then
           RELEASE_ENTRY="    <release version=\"${VERSION}\" date=\"$(date +%Y-%m-%d)\">\n"
           RELEASE_ENTRY="${RELEASE_ENTRY}      <description>\n"
           RELEASE_ENTRY="${RELEASE_ENTRY}        <ul>\n"
-          while IFS= read -r line; do
-            if [ -n "$line" ]; then
+          if [ -s /tmp/release-notes.txt ]; then
+            while IFS= read -r line; do
+              [ -z "$line" ] && continue
               ITEM="$(echo "$line" | sed 's/^- //' | sed 's/^[[:space:]]*//')"
               RELEASE_ENTRY="${RELEASE_ENTRY}          <li>${ITEM}</li>\n"
-            fi
-          done < /tmp/release-notes.txt
+            done < /tmp/release-notes.txt
+          else
+            RELEASE_ENTRY="${RELEASE_ENTRY}          <li>No changes since previous release</li>\n"
+          fi
           RELEASE_ENTRY="${RELEASE_ENTRY}        </ul>\n"
           RELEASE_ENTRY="${RELEASE_ENTRY}      </description>\n"
           RELEASE_ENTRY="${RELEASE_ENTRY}    </release>"
-          
+
           if grep -q "<releases>" "$METAINFO_PATH"; then
             if grep -q "version=\"${VERSION}\"" "$METAINFO_PATH"; then
               echo "Version ${VERSION} already exists in ${METAINFO_PATH}"
@@ -263,11 +294,11 @@ runs:
       run: |
         set -Eeuo pipefail
         CHANGED_FILES=""
-        
+
         if [ "${{ steps.changelog.outputs.changelog-updated }}" = "true" ]; then
           CHANGED_FILES="${{ inputs.changelog-path }}"
         fi
-        
+
         if [ -n "${{ inputs.version-file-path }}" ] && [ -n "${{ inputs.version-code }}" ]; then
           if [ -n "$CHANGED_FILES" ]; then
             CHANGED_FILES="$CHANGED_FILES,${{ inputs.version-file-path }}"
@@ -275,7 +306,7 @@ runs:
             CHANGED_FILES="${{ inputs.version-file-path }}"
           fi
         fi
-        
+
         if [ -n "${{ inputs.metainfo-path }}" ] && [ -f "${{ inputs.metainfo-path }}" ]; then
           if [ -n "$CHANGED_FILES" ]; then
             CHANGED_FILES="$CHANGED_FILES,${{ inputs.metainfo-path }}"
@@ -283,8 +314,8 @@ runs:
             CHANGED_FILES="${{ inputs.metainfo-path }}"
           fi
         fi
-        
-        echo "files-changed=$CHANGED_FILES" >> $GITHUB_OUTPUT
+
+        echo "files-changed=$CHANGED_FILES" >> "$GITHUB_OUTPUT"
 
     - name: Commit Changes
       if: inputs.auto-commit == 'true' && steps.files.outputs.files-changed != ''
@@ -293,17 +324,17 @@ runs:
         set -Eeuo pipefail
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Actions"
-        
+
         IFS=',' read -ra FILES <<< "${{ steps.files.outputs.files-changed }}"
         for file in "${FILES[@]}"; do
           if [ -f "$file" ]; then
             git add "$file"
           fi
         done
-        
+
         COMMIT_MSG="${{ inputs.commit-message }}"
         COMMIT_MSG="${COMMIT_MSG//\{\{version\}\}/${{ inputs.version }}}"
-        
+
         git commit -m "$COMMIT_MSG" || echo "No changes to commit"
         git push || echo "Nothing to push"
 
