@@ -38,6 +38,10 @@ inputs:
     description: 'Comma-separated patterns to exclude from commits (applied to subject, anchored)'
     required: false
     default: 'Update version to,Merge ,Auto-generate changelog'
+  vercode-prefix:
+    description: 'Prefix used before version in CHANGELOG headers (e.g., "v")'
+    required: false
+    default: ''
   auto-commit:
     description: 'Automatically commit changes'
     required: false
@@ -45,7 +49,7 @@ inputs:
   commit-message:
     description: 'Commit message template'
     required: false
-    default: 'Update release notes for {{version}}'
+    default: 'Update release notes for version {{version}}'
 
 outputs:
   release-notes:
@@ -188,6 +192,8 @@ runs:
         set -Eeuo pipefail
         CHANGELOG_PATH="${{ inputs.changelog-path }}"
         VERSION="${{ inputs.version }}"
+        HEADER_PREFIX="${{ inputs.vercode-prefix }}"
+        HEADER_LINE="## ${HEADER_PREFIX}${VERSION}"
         UPDATED="false"
 
         # Helper: write notes or fallback bullet
@@ -200,11 +206,12 @@ runs:
         }
 
         if [ -f "$CHANGELOG_PATH" ]; then
-          if grep -q "## ${VERSION}" "$CHANGELOG_PATH"; then
-            echo "Version ${VERSION} already exists in ${CHANGELOG_PATH}"
+          # Use fixed-string grep to avoid regex surprises if prefix contains meta chars
+          if grep -Fq "$HEADER_LINE" "$CHANGELOG_PATH"; then
+            echo "Version header already exists in ${CHANGELOG_PATH}: $HEADER_LINE"
           else
             {
-              echo "## ${VERSION}"
+              echo "$HEADER_LINE"
               echo ""
               write_notes
               echo ""
@@ -219,7 +226,7 @@ runs:
           {
             echo "# Changelog"
             echo ""
-            echo "## ${VERSION}"
+            echo "$HEADER_LINE"
             echo ""
             write_notes
             echo ""
