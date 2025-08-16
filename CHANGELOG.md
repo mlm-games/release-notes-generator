@@ -1,30 +1,3 @@
-## Unreleased
-
-- Update README.md (test) by @ragebreaker
-- GitHub by @a3762fd94c757e1af68659b001fbff0625b4ffed
-- ragebreaker by @
-- 51d1e1c40101c4307ecc7584ba21c7f26cb153f1 by @
--  by @Update CHANGELOG.md
--  by @GitHub
-- GitHub by @2c3d432905c095d56fb614c39c98c10dd9dd81f3
-- ragebreaker by @
-- 038235330c654fbd6e7d5c9b1b65c8c91061f1ef by @
--  by @Update action.yml
-- Bumps [actions/checkout](https://github.com/actions/checkout) from 4 to 5.
-- [Release notes](https://github.com/actions/checkout/releases)
-- [Changelog](https://github.com/actions/checkout/blob/main/CHANGELOG.md)
-- [Commits](https://github.com/actions/checkout/compare/v4...v5)
-
----
-updated-dependencies:
-- dependency-name: actions/checkout
-  dependency-version: '5'
-  dependency-type: direct:production
-  update-type: version-update:semver-major
-...
-
-Signed-off-by: dependabot[bot] <support@github.com> by @GitHub
-- Add template dependabot.yml by @ragebreaker
 
 
 
