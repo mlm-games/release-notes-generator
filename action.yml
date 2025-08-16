@@ -1,5 +1,6 @@
+# action.yml (composite action)
 name: 'release-notes-generator'
-description: 'Generate clean release notes for CHANGELOG.md, version files, and various release platforms'
+description: 'Generate release notes for CHANGELOG.md, version files, and various release platforms'
 author: 'mlm-games'
 
 inputs:
@@ -27,7 +28,7 @@ inputs:
     required: false
     default: ''
   format:
-    description: 'Release note format. Supported tokens: {{subject}}, {{author}}, {{committer}}, {{author-handle}}, {{committer-handle}}, {{hash}}, {{short-hash}}, {{message}}'
+    description: 'Line format for each commit. Tokens: {{subject}}, {{author}}, {{committer}}, {{author-email}}, {{committer-email}}, {{author-handle}}, {{committer-handle}}, {{hash}}, {{short-hash}}, {{message}}'
     required: false
     default: '- {{subject}}'
   debug:
@@ -35,11 +36,11 @@ inputs:
     required: false
     default: 'false'
   exclude-patterns:
-    description: 'Comma-separated patterns to exclude from commits (applied to subject, anchored)'
+    description: 'Comma-separated patterns to exclude from subjects (anchored)'
     required: false
     default: 'Update version to,Merge ,Auto-generate changelog'
   vercode-prefix:
-    description: 'Prefix used before version in CHANGELOG headers (e.g., "v")'
+    description: 'Prefix before version in CHANGELOG header (e.g., "v")'
     required: false
     default: 'v'
   auto-commit:
@@ -72,7 +73,10 @@ runs:
 
         HEAD_REF="${{ inputs.head-ref }}"
 
-        # Determine tags and commit range (handles "HEAD is at a tag" case)
+        # Compute commit range:
+        # - If HEAD is exactly at a tag, use previous tag..HEAD
+        # - Else if a latest tag exists, use latest tag..HEAD
+        # - Else, use all commits reachable from HEAD (first release)
         LATEST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
         HEAD_TAG="$(git describe --tags --exact-match "${HEAD_REF}" 2>/dev/null || true)"
         PREV_TAG=""
@@ -80,32 +84,29 @@ runs:
           PREV_TAG="$(git describe --tags --abbrev=0 --exclude="$HEAD_TAG" 2>/dev/null || true)"
         fi
 
-        RANGE=()  # default: all commits reachable from HEAD
         if [ -n "$HEAD_TAG" ] && [ -n "$PREV_TAG" ]; then
-          RANGE=("$PREV_TAG..${HEAD_REF}")
+          RANGE="${PREV_TAG}..${HEAD_REF}"
         elif [ -z "$HEAD_TAG" ] && [ -n "$LATEST_TAG" ]; then
-          RANGE=("$LATEST_TAG..${HEAD_REF}")
+          RANGE="${LATEST_TAG}..${HEAD_REF}"
+        else
+          RANGE="${HEAD_REF}"
         fi
 
-        # Build anchored, regex-safe exclusion regex from comma-separated list
+        # Build anchored, regex-safe exclusion regex from comma-separated list (applies to subject)
         RAW="${{ inputs.exclude-patterns }}"
         IFS=',' read -ra EX_PATTERNS <<< "$RAW"
         EX_REGEX=""
         for p in "${EX_PATTERNS[@]}"; do
-          # trim
           p="$(echo "$p" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
           [ -z "$p" ] && continue
-          # escape regex meta
           ep="$(printf '%s' "$p" | sed -E 's/[][(){}.^$*+?|\\/]/\\&/g')"
           ep="^${ep}"
           EX_REGEX="${EX_REGEX:+${EX_REGEX}|}${ep}"
         done
 
-        # Helper: turn author/committer into a GitHub-like handle when possible
+        # Helper: derive a GitHub-like handle from name/email (e.g., 12345+user@users.noreply.github.com -> user)
         gh_handle() {
-          # 1: name, 2: email
           local name="$1" email="$2" lp handle=""
-          # emails like username@users.noreply.github.com or 12345+username@users.noreply.github.com
           if [[ "$email" =~ ^([^@]+)@users\.noreply\.github\.com$ ]]; then
             lp="${BASH_REMATCH[1]}"
             if [[ "$lp" == *"+"* ]]; then
@@ -114,11 +115,9 @@ runs:
               handle="$lp"
             fi
           fi
-          # Fallback: if name looks like a valid handle or ends with [bot]
-          if [ -z "$handle" ]; then
-            if [[ "$name" =~ ^<!--citation:1-->(\[bot\])?$ ]]; then
-              handle="${BASH_REMATCH[1]}"
-            fi
+          # Fallback if name looks like a handle or a bot name
+          if [ -z "$handle" ] && [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}(\[bot\])?$ ]]; then
+            handle="${name%\[bot\]}"
           fi
           printf '%s' "$handle"
         }
@@ -126,94 +125,82 @@ runs:
         RELEASE_NOTES=""
         RELEASE_NAME=""
 
-        # Stream NUL-delimited fields directly from git (minimize fields to avoid misalignment)
-        # Fields: subject, author_name, author_email, committer_name, committer_email, hash, short, body (then NUL)
-        exec 3< <(git log -z "${RANGE[@]}" --no-merges --pretty=format:'%s%x00%an%x00%ae%x00%cn%x00%ce%x00%H%x00%h%x00%b%x00')
+        # Robust record parsing using ASCII unit/record separators to avoid NUL-in-variable issues.
+        # Record: subject ␟ author ␟ author_email ␟ committer ␟ committer_email ␟ hash ␟ short ␟ body ␞
+        sep_f=$'\x1f'
+        sep_r=$'\x1e'
+        exec 3< <(git log -z --no-merges ${RANGE} \
+          --pretty=format:"%s%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%H%x1f%h%x1f%b%x1e")
 
-        while :; do
-          IFS= read -r -d '' subject <&3 || break
-          IFS= read -r -d '' author <&3 || break
-          IFS= read -r -d '' author_email <&3 || break
-          IFS= read -r -d '' committer <&3 || break
-          IFS= read -r -d '' committer_email <&3 || break
-          IFS= read -r -d '' hash <&3 || break
-          IFS= read -r -d '' short <&3 || break
-          IFS= read -r -d '' body <&3 || break
+        while IFS= read -r -d "$sep_r" rec <&3; do
+          IFS="$sep_f" read -r subject author author_email committer committer_email hash short body <<< "$rec"
 
-          # Apply exclusion against SUBJECT only (anchored)
+          # Exclude by anchored subject
           if [ -n "$EX_REGEX" ] && printf '%s' "$subject" | grep -Eq "$EX_REGEX"; then
             continue
           fi
 
-          # Normalize values
+          # Normalize fields
           subject="$(printf '%s' "$subject" | tr -d '\r' | sed -E 's/[[:space:]]+$//')"
-          # message = single-line subject + body (joined), used only if template wants it
-          msg="$(printf '%s %s' "$subject" "$body" | tr '\r\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/[[:space:]]+$//')"
+          body="$(printf '%s' "$body" | tr '\r\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/[[:space:]]+$//')"
+          msg="$(printf '%s %s' "$subject" "$body" | sed -E 's/[[:space:]]+/ /g; s/[[:space:]]+$//')"
 
           author_handle="$(gh_handle "$author" "$author_email")"
           committer_handle="$(gh_handle "$committer" "$committer_email")"
 
-          # Build one line using the template, but only known tokens are replaced.
           tpl='${{ inputs.format }}'
+
+          # First pass: direct token replacements
           tpl="${tpl//\{\{subject\}\}/$subject}"
           tpl="${tpl//\{\{author\}\}/$author}"
           tpl="${tpl//\{\{committer\}\}/$committer}"
+          tpl="${tpl//\{\{author-email\}\}/$author_email}"
+          tpl="${tpl//\{\{committer-email\}\}/$committer_email}"
           tpl="${tpl//\{\{author-handle\}\}/$author_handle}"
           tpl="${tpl//\{\{committer-handle\}\}/$committer_handle}"
           tpl="${tpl//\{\{hash\}\}/$hash}"
           tpl="${tpl//\{\{short-hash\}\}/$short}"
+          tpl="${tpl//\{\{short\}\}/$short}"
           tpl="${tpl//\{\{message\}\}/$msg}"
 
-          # Support simple fallbacks like {{author-handle|committer-handle}}
-          while [[ "$tpl" =~ \{\{([^}|]+)\|([^}]+)\}\} ]]; do
-            left="${BASH_REMATCH[1]}"
-            right="${BASH_REMATCH[2]}"
-            case "$left" in
-              subject)        rep="$subject" ;;
-              author)         rep="$author" ;;
-              committer)      rep="$committer" ;;
-              author-handle)  rep="$author_handle" ;;
-              committer-handle) rep="$committer_handle" ;;
-              hash)           rep="$hash" ;;
-              short-hash)     rep="$short" ;;
-              message)        rep="$msg" ;;
-              *)              rep="" ;;
-            esac
-            if [ -z "$rep" ]; then
-              case "$right" in
-                subject)        rep="$subject" ;;
-                author)         rep="$author" ;;
-                committer)      rep="$committer" ;;
-                author-handle)  rep="$author_handle" ;;
-                committer-handle) rep="$committer_handle" ;;
-                hash)           rep="$hash" ;;
-                short-hash)     rep="$short" ;;
-                message)        rep="$msg" ;;
-                *)              rep="" ;;
+          # Second pass: fallbacks like {{author-handle|committer-handle}}
+          # Only recognized tokens are substituted; unknown tokens become empty.
+          while [[ "$tpl" =~ \{\{([^}]+)\}\} ]]; do
+            raw="${BASH_REMATCH[1]}"
+            repl=""
+            IFS='|' read -ra parts <<< "$raw"
+            for part in "${parts[@]}"; do
+              case "$part" in
+                subject)            repl="$subject" ;;
+                author)             repl="$author" ;;
+                committer)          repl="$committer" ;;
+                author-email)       repl="$author_email" ;;
+                committer-email)    repl="$committer_email" ;;
+                author-handle)      repl="$author_handle" ;;
+                committer-handle)   repl="$committer_handle" ;;
+                hash)               repl="$hash" ;;
+                short|short-hash)   repl="$short" ;;
+                message)            repl="$msg" ;;
+                *)                  ;;  # ignore unknowns
               esac
-            fi
-            tpl="${tpl//\{\{$left|$right\}\}/$rep}"
+              [ -n "$repl" ] && break
+            done
+            tpl="${tpl/${BASH_REMATCH[0]}/$repl}"
           done
 
-          # Strip any remaining {{...}} tokens (unknown placeholders)
-          tpl="$(printf '%s' "$tpl" | sed -E 's/\{\{[^}]+\}\}//g')"
-          # Cleanup whitespace and dangling "by @" fragments
+          # Cleanup: collapse spaces and remove dangling "by @" fragments if handle was empty
           tpl="$(printf '%s' "$tpl" \
                 | sed -E 's/[[:space:]]+/ /g; s/^[[:space:]]+|[[:space:]]+$//g' \
-                | sed -E 's/[[:space:]]+by[[:space:]]+@$//; s/@[[:space:]]*$//')"
+                | sed -E 's/[[:space:]]+by[[:space:]]+@$//; s/@$//')"
 
-          # Ensure bullets always start with "- " even if user removed it in format by mistake
+          # If the user forgot a bullet, keep consistent bullets
           if ! printf '%s' "$tpl" | grep -qE '^[*-] '; then
             tpl="- $tpl"
           fi
 
-          # Skip empty result
-          [ -z "$tpl" ] && continue
-
-          RELEASE_NOTES+="${tpl}"$'\n'
+          [ -n "$tpl" ] && RELEASE_NOTES+="${tpl}"$'\n'
           [ -z "$RELEASE_NAME" ] && RELEASE_NAME="$subject"
         done
-
         exec 3<&-
 
         # Trim trailing newline
@@ -222,19 +209,15 @@ runs:
         if [ "${{ inputs.debug }}" = "true" ]; then
           echo "Latest tag: ${LATEST_TAG}"
           echo "Head ref: ${HEAD_REF}"
-          echo "Head tag (if any): ${HEAD_TAG}"
-          echo "Previous tag (if head is tagged): ${PREV_TAG}"
-          if [ "${#RANGE[@]}" -eq 0 ]; then
-            echo "Computed range: <all commits>"
-          else
-            echo "Computed range: ${RANGE[*]}"
-          fi
+          echo "Head tag: ${HEAD_TAG}"
+          echo "Prev tag: ${PREV_TAG}"
+          echo "Range: ${RANGE}"
           echo "Exclude regex: ${EX_REGEX:-<none>}"
-          echo "Preview (first 20 lines):"
+          echo "Preview:"
           printf '%s\n' "$RELEASE_NOTES" | head -20
         fi
 
-        # Output to GITHUB_OUTPUT safely using a unique delimiter
+        # Output through GITHUB_OUTPUT (safe custom delimiter)
         DELIM="END_OF_RELEASE_NOTES_$(date +%s%N)_$RANDOM"
         {
           printf 'release-notes<<%s\n' "$DELIM"
@@ -254,11 +237,10 @@ runs:
         set -Eeuo pipefail
         CHANGELOG_PATH="${{ inputs.changelog-path }}"
         VERSION="${{ inputs.version }}"
-        HEADER_PREFIX="${{ inputs.vercode-prefix }}"
-        HEADER_LINE="## ${HEADER_PREFIX}${VERSION}"
+        PREFIX="${{ inputs.vercode-prefix }}"
+        HEADER_LINE="## ${PREFIX}${VERSION}"
         UPDATED="false"
 
-        # Helper: write notes or fallback bullet
         write_notes() {
           if [ -s /tmp/release-notes.txt ]; then
             cat /tmp/release-notes.txt
@@ -269,7 +251,7 @@ runs:
 
         if [ -f "$CHANGELOG_PATH" ]; then
           if grep -Fq "$HEADER_LINE" "$CHANGELOG_PATH"; then
-            echo "Version header already exists in ${CHANGELOG_PATH}: $HEADER_LINE"
+            echo "Version already present: $HEADER_LINE"
           else
             {
               echo "$HEADER_LINE"
@@ -308,13 +290,11 @@ runs:
         mkdir -p "$(dirname "$VERSION_FILE")"
 
         if [[ "$VERSION_FILE" == *"/changelogs/"* ]]; then
-          # For Fastlane-style per-build changelog files
+          # Per-build Fastlane-style changelog
           cat /tmp/release-notes.txt > "$VERSION_FILE"
         else
-          # For simple numeric version code files
           echo "$VERSION_CODE" > "$VERSION_FILE"
         fi
-
         echo "Updated version file: $VERSION_FILE"
 
     - name: Update Flathub Metainfo
@@ -326,27 +306,27 @@ runs:
         VERSION="${{ inputs.version }}"
 
         if [ -f "$METAINFO_PATH" ]; then
-          RELEASE_ENTRY="    <release version=\"${VERSION}\" date=\"$(date +%Y-%m-%d)\">\n"
-          RELEASE_ENTRY="${RELEASE_ENTRY}      <description>\n"
-          RELEASE_ENTRY="${RELEASE_ENTRY}        <ul>\n"
+          ENTRY="    <release version=\"${VERSION}\" date=\"$(date +%Y-%m-%d)\">\n"
+          ENTRY="${ENTRY}      <description>\n"
+          ENTRY="${ENTRY}        <ul>\n"
           if [ -s /tmp/release-notes.txt ]; then
             while IFS= read -r line; do
               [ -z "$line" ] && continue
               ITEM="$(echo "$line" | sed 's/^- //' | sed 's/^[[:space:]]*//')"
-              RELEASE_ENTRY="${RELEASE_ENTRY}          <li>${ITEM}</li>\n"
+              ENTRY="${ENTRY}          <li>${ITEM}</li>\n"
             done < /tmp/release-notes.txt
           else
-            RELEASE_ENTRY="${RELEASE_ENTRY}          <li>No changes since previous release</li>\n"
+            ENTRY="${ENTRY}          <li>No changes since previous release</li>\n"
           fi
-          RELEASE_ENTRY="${RELEASE_ENTRY}        </ul>\n"
-          RELEASE_ENTRY="${RELEASE_ENTRY}      </description>\n"
-          RELEASE_ENTRY="${RELEASE_ENTRY}    </release>"
+          ENTRY="${ENTRY}        </ul>\n"
+          ENTRY="${ENTRY}      </description>\n"
+          ENTRY="${ENTRY}    </release>"
 
           if grep -q "<releases>" "$METAINFO_PATH"; then
             if grep -q "version=\"${VERSION}\"" "$METAINFO_PATH"; then
               echo "Version ${VERSION} already exists in ${METAINFO_PATH}"
             else
-              sed -i "/<releases>/a\\${RELEASE_ENTRY}" "$METAINFO_PATH"
+              sed -i "/<releases>/a\\${ENTRY}" "$METAINFO_PATH"
               echo "Updated ${METAINFO_PATH}"
             fi
           else
