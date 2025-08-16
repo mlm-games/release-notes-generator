@@ -1,5 +1,5 @@
 name: 'release-notes-generator'
-description: 'Generate release notes for CHANGELOG.md, version files, and various release platforms'
+description: 'Generate clean release notes for CHANGELOG.md, version files, and various release platforms'
 author: 'mlm-games'
 
 inputs:
@@ -29,6 +29,7 @@ inputs:
   format:
     description: 'Release note format'
     required: false
+    # You can also use: "- {{subject}} by @{{author-handle|committer-handle}}"
     default: '- {{subject}}'
   debug:
     description: 'Print debug info (range, preview)'
@@ -70,6 +71,29 @@ runs:
       run: |
         set -Eeuo pipefail
 
+        # Helper: derive a clean GitHub-like handle from name/email
+        gh_handle() {
+          # 1: name, 2: email
+          local name="$1" email="$2" lp handle=""
+          # emails like username@users.noreply.github.com or 12345+username@users.noreply.github.com
+          if [[ "$email" =~ ^([^@]+)@users\.noreply\.github\.com$ ]]; then
+            lp="${BASH_REMATCH[1]}"
+            if [[ "$lp" == *"+"* ]]; then
+              handle="${lp#*+}"
+            else
+              handle="$lp"
+            fi
+          fi
+          # Fallback from name if it looks like a GitHub handle or bot
+          if [ -z "$handle" ]; then
+            # accept names that look like handles or bots, strip [bot]
+            if [[ "$name" =~ ^([A-Za-z0-9][A-Za-z0-9-]{0,38})(\[bot\])?$ ]]; then
+              handle="${BASH_REMATCH[1]}"
+            fi
+          fi
+          printf '%s' "$handle"
+        }
+
         HEAD_REF="${{ inputs.head-ref }}"
 
         # Determine tags and commit range (handles "HEAD is at a tag" case)
@@ -92,8 +116,10 @@ runs:
         IFS=',' read -ra EX_PATTERNS <<< "$RAW"
         EX_REGEX=""
         for p in "${EX_PATTERNS[@]}"; do
+          # trim
           p="$(echo "$p" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
           [ -z "$p" ] && continue
+          # escape regex meta
           ep="$(printf '%s' "$p" | sed -E 's/[][(){}.^$*+?|\\/]/\\&/g')"
           ep="^${ep}"
           EX_REGEX="${EX_REGEX:+${EX_REGEX}|}${ep}"
@@ -121,10 +147,16 @@ runs:
             continue
           fi
 
+          # Derive handles
+          author_handle="$(gh_handle "$author" "$author_email")"
+          committer_handle="$(gh_handle "$committer" "$committer_email")"
+
           tpl='${{ inputs.format }}'
 
           # message = one-line "subject + body"
-          msg="$(printf '%s %s' "$subject" "$body" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/[[:space:]]+$//')"
+          msg="$(printf '%s %s' "$subject" "$body" \
+                | tr '\r\n' ' ' \
+                | sed -E 's/[[:space:]]+/ /g; s/^[[:space:]]+|[[:space:]]+$//g')"
 
           # Simple placeholders
           tpl="${tpl//\{\{subject\}\}/$subject}"
@@ -136,36 +168,39 @@ runs:
           tpl="${tpl//\{\{short\}\}/$short}"
           tpl="${tpl//\{\{author-email\}\}/$author_email}"
           tpl="${tpl//\{\{committer-email\}\}/$committer_email}"
+          tpl="${tpl//\{\{author-handle\}\}/$author_handle}"
+          tpl="${tpl//\{\{committer-handle\}\}/$committer_handle}"
 
-          # Fallbacks: {{a|b|c}} (choose first non-empty)
+          # Fallbacks: {{a|b|c}} (choose first non-empty among known tokens)
+          # Supported tokens in fallbacks: subject, author, committer, message, hash, short, short-hash, author-email, committer-email, author-handle, committer-handle
           while [[ "$tpl" =~ \{\{([^}]+)\}\} ]]; do
             ph="${BASH_REMATCH[1]}"
             IFS='|' read -ra opts <<< "$ph"
             rep=""
             for opt in "${opts[@]}"; do
               case "$opt" in
-                subject)          rep="$subject" ;;
-                author)           rep="$author" ;;
-                committer)        rep="$committer" ;;
-                message)          rep="$msg" ;;
-                hash)             rep="$hash" ;;
-                short|short-hash) rep="$short" ;;
-                author-email)     rep="$author_email" ;;
-                committer-email)  rep="$committer_email" ;;
+                subject)            rep="$subject" ;;
+                author)             rep="$author" ;;
+                committer)          rep="$committer" ;;
+                message)            rep="$msg" ;;
+                hash)               rep="$hash" ;;
+                short|short-hash)   rep="$short" ;;
+                author-email)       rep="$author_email" ;;
+                committer-email)    rep="$committer_email" ;;
+                author-handle)      rep="$author_handle" ;;
+                committer-handle)   rep="$committer_handle" ;;
               esac
               [ -n "$rep" ] && break
             done
-            # If still empty, leave the original placeholder text untouched to avoid awkward artifacts
-            if [ -n "$rep" ]; then
-              tpl="${tpl//\{\{$ph\}\}/$rep}"
-            else
-              break
-            fi
+            # If nothing matched, replace with empty to avoid leaking placeholders
+            tpl="${tpl//\{\{$ph\}\}/$rep}"
+            # Continue until no more {{...}} tokens remain
+            [[ "$tpl" =~ \{\{([^}]+)\}\} ]] || break
           done
 
-          # Light cleanup: collapse whitespace and remove trailing "by @" or stray "@"
+          # Cleanup: collapse spaces, trim, and remove dangling "by @" fragments
           tpl="$(printf '%s' "$tpl" \
-                | sed -E 's/[[:space:]]+/ /g; s/[[:space:]]+$//' \
+                | sed -E 's/[[:space:]]+/ /g; s/^[[:space:]]+|[[:space:]]+$//g' \
                 | sed -E 's/[[:space:]]+by[[:space:]]+@$//; s/@[[:space:]]*$//')"
 
           # Skip empty lines
