@@ -45,7 +45,7 @@ inputs:
   commit-message:
     description: 'Commit message template'
     required: false
-    default: 'Update release notes for v{{version}}'
+    default: 'Update release notes for {{version}}'
 
 outputs:
   release-notes:
@@ -200,11 +200,11 @@ runs:
         }
 
         if [ -f "$CHANGELOG_PATH" ]; then
-          if grep -q "## v${VERSION}" "$CHANGELOG_PATH"; then
+          if grep -q "## ${VERSION}" "$CHANGELOG_PATH"; then
             echo "Version ${VERSION} already exists in ${CHANGELOG_PATH}"
           else
             {
-              echo "## v${VERSION}"
+              echo "## ${VERSION}"
               echo ""
               write_notes
               echo ""
@@ -219,7 +219,7 @@ runs:
           {
             echo "# Changelog"
             echo ""
-            echo "## v${VERSION}"
+            echo "## ${VERSION}"
             echo ""
             write_notes
             echo ""
