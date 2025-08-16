@@ -1,16 +1,6 @@
 ## 1.2.1
 
-
-
-
-## Unreleased
-
-- Update action.yml by @ragebreaker
-- Update action.yml by @ragebreaker
-- Update action.yml to fix syntax err by @ragebreaker
-- Update action.yml by @ragebreaker
-- go back to old action.yml by @ragebreaker
-- Update action.yml to try diff method by @ragebreaker
+- Introduce a bug to solve for the next release
 
 
 ## v1.1.1
