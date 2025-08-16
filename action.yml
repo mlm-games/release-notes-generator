@@ -29,7 +29,7 @@ inputs:
   format:
     description: 'Release note format'
     required: false
-    default: '- {{subject}}' # by @{{author}} is another common use case
+    default: '- {{subject}}'
   debug:
     description: 'Print debug info (range, preview)'
     required: false
@@ -41,7 +41,7 @@ inputs:
   vercode-prefix:
     description: 'Prefix used before version in CHANGELOG headers (e.g., "v")'
     required: false
-    default: ''
+    default: 'v'
   auto-commit:
     description: 'Automatically commit changes'
     required: false
@@ -49,7 +49,7 @@ inputs:
   commit-message:
     description: 'Commit message template'
     required: false
-    default: 'Update release notes for version {{version}}'
+    default: 'Update release notes for v{{version}}'
 
 outputs:
   release-notes:
@@ -92,10 +92,8 @@ runs:
         IFS=',' read -ra EX_PATTERNS <<< "$RAW"
         EX_REGEX=""
         for p in "${EX_PATTERNS[@]}"; do
-          # trim
           p="$(echo "$p" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
           [ -z "$p" ] && continue
-          # escape regex meta
           ep="$(printf '%s' "$p" | sed -E 's/[][(){}.^$*+?|\\/]/\\&/g')"
           ep="^${ep}"
           EX_REGEX="${EX_REGEX:+${EX_REGEX}|}${ep}"
@@ -105,13 +103,16 @@ runs:
         RELEASE_NAME=""
 
         # Stream NUL-delimited fields directly from git to avoid losing data in variables
-        # Fields: hash, author, committer, subject, body (then NUL)
-        exec 3< <(git log -z "${RANGE[@]}" --no-merges --pretty=format:'%H%x00%an%x00%cn%x00%s%x00%b%x00')
+        # Fields: hash, short, author, author_email, committer, committer_email, subject, body (then NUL)
+        exec 3< <(git log -z "${RANGE[@]}" --no-merges --pretty=format:'%H%x00%h%x00%an%x00%ae%x00%cn%x00%ce%x00%s%x00%b%x00')
 
         while :; do
           IFS= read -r -d '' hash <&3 || break
+          IFS= read -r -d '' short <&3 || break
           IFS= read -r -d '' author <&3 || break
+          IFS= read -r -d '' author_email <&3 || break
           IFS= read -r -d '' committer <&3 || break
+          IFS= read -r -d '' committer_email <&3 || break
           IFS= read -r -d '' subject <&3 || break
           IFS= read -r -d '' body <&3 || break
 
@@ -123,30 +124,52 @@ runs:
           tpl='${{ inputs.format }}'
 
           # message = one-line "subject + body"
-          msg="$(printf '%s %s' "$subject" "$body" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g' | sed -E 's/[[:space:]]+$//')"
+          msg="$(printf '%s %s' "$subject" "$body" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/[[:space:]]+$//')"
 
           # Simple placeholders
           tpl="${tpl//\{\{subject\}\}/$subject}"
           tpl="${tpl//\{\{author\}\}/$author}"
           tpl="${tpl//\{\{committer\}\}/$committer}"
           tpl="${tpl//\{\{message\}\}/$msg}"
+          tpl="${tpl//\{\{hash\}\}/$hash}"
+          tpl="${tpl//\{\{short-hash\}\}/$short}"
+          tpl="${tpl//\{\{short\}\}/$short}"
+          tpl="${tpl//\{\{author-email\}\}/$author_email}"
+          tpl="${tpl//\{\{committer-email\}\}/$committer_email}"
 
-          # Fallbacks: {{a|b|c}}
+          # Fallbacks: {{a|b|c}} (choose first non-empty)
           while [[ "$tpl" =~ \{\{([^}]+)\}\} ]]; do
             ph="${BASH_REMATCH[1]}"
             IFS='|' read -ra opts <<< "$ph"
             rep=""
             for opt in "${opts[@]}"; do
               case "$opt" in
-                subject)   rep="$subject" ;;
-                author)    rep="$author" ;;
-                committer) rep="$committer" ;;
-                message)   rep="$msg" ;;
+                subject)          rep="$subject" ;;
+                author)           rep="$author" ;;
+                committer)        rep="$committer" ;;
+                message)          rep="$msg" ;;
+                hash)             rep="$hash" ;;
+                short|short-hash) rep="$short" ;;
+                author-email)     rep="$author_email" ;;
+                committer-email)  rep="$committer_email" ;;
               esac
               [ -n "$rep" ] && break
             done
-            tpl="${tpl//\{\{$ph\}\}/$rep}"
+            # If still empty, leave the original placeholder text untouched to avoid awkward artifacts
+            if [ -n "$rep" ]; then
+              tpl="${tpl//\{\{$ph\}\}/$rep}"
+            else
+              break
+            fi
           done
+
+          # Light cleanup: collapse whitespace and remove trailing "by @" or stray "@"
+          tpl="$(printf '%s' "$tpl" \
+                | sed -E 's/[[:space:]]+/ /g; s/[[:space:]]+$//' \
+                | sed -E 's/[[:space:]]+by[[:space:]]+@$//; s/@[[:space:]]*$//')"
+
+          # Skip empty lines
+          [ -z "$tpl" ] && continue
 
           RELEASE_NOTES+="${tpl}"$'\n'
           [ -z "$RELEASE_NAME" ] && RELEASE_NAME="$subject"
@@ -206,7 +229,6 @@ runs:
         }
 
         if [ -f "$CHANGELOG_PATH" ]; then
-          # Use fixed-string grep to avoid regex surprises if prefix contains meta chars
           if grep -Fq "$HEADER_LINE" "$CHANGELOG_PATH"; then
             echo "Version header already exists in ${CHANGELOG_PATH}: $HEADER_LINE"
           else
