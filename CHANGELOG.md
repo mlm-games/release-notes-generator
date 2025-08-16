@@ -1,5 +1,5 @@
 
-## 1.2.1
+## v1.2.1
 
 - Introduce a bug to solve for the next release
 
