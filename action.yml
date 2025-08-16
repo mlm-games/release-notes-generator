@@ -74,10 +74,9 @@ runs:
           RANGE=() # all commits
         fi
 
-        # Use non-printable separators to survive pipes/newlines in data
-        F=$'\x1F'  # field sep
-        R=$'\x1E'  # record sep
-        COMMITS="$(git log "${RANGE[@]}" --no-merges --pretty=format:"%H${F}%an${F}%cn${F}%s${F}%b${R}")"
+        # NUL-separated fields to be robust to pipes/newlines in messages
+        # Fields: hash, author, committer, subject, body (then NUL)
+        COMMITS="$(git log -z "${RANGE[@]}" --no-merges --pretty=format:'%H%x00%an%x00%cn%x00%s%x00%b%x00')"
 
         # Build anchored, regex-safe exclusion regex from comma-separated list
         RAW="${{ inputs.exclude-patterns }}"
@@ -96,46 +95,52 @@ runs:
         RELEASE_NOTES=""
         RELEASE_NAME=""
 
-        # Iterate records
-        while IFS= read -r -d $'\x1E' rec; do
-          [ -z "$rec" ] && continue
-          IFS=$'\x1F' read -r hash author committer subject body <<< "$rec"
+        # Iterate 5 NUL-delimited fields at a time
+        # shellcheck disable=SC2034
+        {
+          while :; do
+            IFS= read -r -d '' hash || break
+            IFS= read -r -d '' author || break
+            IFS= read -r -d '' committer || break
+            IFS= read -r -d '' subject || break
+            IFS= read -r -d '' body || break
 
-          # Apply exclusion against subject
-          if [ -n "$EX_REGEX" ] && echo "$subject" | grep -Eq "$EX_REGEX"; then
-            continue
-          fi
+            # Apply exclusion against subject
+            if [ -n "$EX_REGEX" ] && printf '%s' "$subject" | grep -Eq "$EX_REGEX"; then
+              continue
+            fi
 
-          tpl='${{ inputs.format }}'
-          # message = one-line "subject + body"
-          msg="$(printf '%s %s' "$subject" "$body" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g' | sed -E 's/[[:space:]]+$//')"
+            tpl='${{ inputs.format }}'
+            # message = one-line "subject + body"
+            msg="$(printf '%s %s' "$subject" "$body" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g' | sed -E 's/[[:space:]]+$//')"
 
-          # simple placeholders
-          tpl="${tpl//\{\{subject\}\}/$subject}"
-          tpl="${tpl//\{\{author\}\}/$author}"
-          tpl="${tpl//\{\{committer\}\}/$committer}"
-          tpl="${tpl//\{\{message\}\}/$msg}"
+            # simple placeholders
+            tpl="${tpl//\{\{subject\}\}/$subject}"
+            tpl="${tpl//\{\{author\}\}/$author}"
+            tpl="${tpl//\{\{committer\}\}/$committer}"
+            tpl="${tpl//\{\{message\}\}/$msg}"
 
-          # fallbacks: {{a|b|c}}
-          while [[ "$tpl" =~ \{\{([^}]+)\}\} ]]; do
-            ph="${BASH_REMATCH[1]}"
-            IFS='|' read -ra opts <<< "$ph"
-            rep=""
-            for opt in "${opts[@]}"; do
-              case "$opt" in
-                subject) rep="$subject" ;;
-                author) rep="$author" ;;
-                committer) rep="$committer" ;;
-                message) rep="$msg" ;;
-              esac
-              [ -n "$rep" ] && break
+            # fallbacks: {{a|b|c}}
+            while [[ "$tpl" =~ \{\{([^}]+)\}\} ]]; do
+              ph="${BASH_REMATCH[1]}"
+              IFS='|' read -ra opts <<< "$ph"
+              rep=""
+              for opt in "${opts[@]}"; do
+                case "$opt" in
+                  subject) rep="$subject" ;;
+                  author) rep="$author" ;;
+                  committer) rep="$committer" ;;
+                  message) rep="$msg" ;;
+                esac
+                [ -n "$rep" ] && break
+              done
+              tpl="${tpl//\{\{$ph\}\}/$rep}"
             done
-            tpl="${tpl//\{\{$ph\}\}/$rep}"
-          done
 
-          RELEASE_NOTES+="${tpl}"$'\n'
-          [ -z "$RELEASE_NAME" ] && RELEASE_NAME="$subject"
-        done <<< "$COMMITS"
+            RELEASE_NOTES+="${tpl}"$'\n'
+            [ -z "$RELEASE_NAME" ] && RELEASE_NAME="$subject"
+          done
+        } <<< "$COMMITS"
 
         RELEASE_NOTES="${RELEASE_NOTES%$'\n'}"
 
@@ -144,14 +149,16 @@ runs:
           echo "Head ref: ${HEAD_REF}"
           echo "Exclude regex: ${EX_REGEX}"
           echo "Preview (first 20 lines):"
-          echo "$RELEASE_NOTES" | head -20
+          printf '%s\n' "$RELEASE_NOTES" | head -20
         fi
 
+        # Use a unique delimiter to avoid "matching delimiter not found" errs
+        DELIM="END_OF_RELEASE_NOTES_$(date +%s%N)_$RANDOM"
         {
-          echo "release-notes<<'EOF'"
-          echo "$RELEASE_NOTES"
-          echo "EOF"
-          echo "release-name=$RELEASE_NAME"
+          printf 'release-notes<<%s\n' "$DELIM"
+          printf '%s\n' "$RELEASE_NOTES"
+          printf '%s\n' "$DELIM"
+          printf 'release-name=%s\n' "$RELEASE_NAME"
         } >> "$GITHUB_OUTPUT"
 
         printf '%s\n' "$RELEASE_NOTES" > /tmp/release-notes.txt
