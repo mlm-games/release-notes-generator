@@ -144,4 +144,4 @@ issues: write
 
 ## License
 
-MIT
+MIT.
