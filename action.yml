@@ -364,7 +364,7 @@ runs:
             "$METAINFO"
         fi
 
-        # appstreamcli validate --pedantic "$METAINFO" # For debugging
+        appstreamcli validate --pedantic "$METAINFO" # For validation (similar to flathub's)
     
         echo "Metainfo updated: $METAINFO"
         
