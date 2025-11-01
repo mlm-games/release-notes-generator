@@ -351,7 +351,9 @@ runs:
     
         if [ -s "$NOTES" ]; then
           while IFS= read -r line; do
-            line="${line#- }"                               # strip leading "- "
+            # Trim leading “- ” and surrounding whitespace
+            line="$(printf '%s' "$line" | sed -E 's/^[-*][[:space:]]*//; s/[[:space:]]+$//')"
+            [ -z "$line" ] && continue           # ← skip empty lines
             xmlstarlet ed -L \
               --subnode '/component/releases/release[1]/description/ul' \
               --type elem -n li -v "$(xmlstarlet esc <<<"$line")" \
