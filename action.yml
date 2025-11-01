@@ -302,7 +302,7 @@ runs:
       run: |
         set -Eeuo pipefail
 
-        ssudo apt update
+        sudo apt update
         sudo apt install -y xmlstarlet appstream
     
         METAINFO="${{ inputs.metainfo-path }}"
