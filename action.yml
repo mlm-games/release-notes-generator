@@ -1,4 +1,3 @@
-# action.yml (composite action)
 name: 'release-notes-generator'
 description: 'Generate release notes for CHANGELOG.md, version files, and various release platforms'
 author: 'mlm-games'
@@ -302,40 +301,61 @@ runs:
       shell: bash
       run: |
         set -Eeuo pipefail
+
+        sudo apt install -y xmlstarlet
+    
         METAINFO_PATH="${{ inputs.metainfo-path }}"
         VERSION="${{ inputs.version }}"
-
-        if [ -f "$METAINFO_PATH" ]; then
-          ENTRY="    <release version=\"${VERSION}\" date=\"$(date +%Y-%m-%d)\">\n"
-          ENTRY="${ENTRY}      <description>\n"
-          ENTRY="${ENTRY}        <ul>\n"
-          if [ -s /tmp/release-notes.txt ]; then
-            while IFS= read -r line; do
-              [ -z "$line" ] && continue
-              ITEM="$(echo "$line" | sed 's/^- //' | sed 's/^[[:space:]]*//')"
-              ENTRY="${ENTRY}          <li>${ITEM}</li>\n"
-            done < /tmp/release-notes.txt
-          else
-            ENTRY="${ENTRY}          <li>No changes since previous release</li>\n"
-          fi
-          ENTRY="${ENTRY}        </ul>\n"
-          ENTRY="${ENTRY}      </description>\n"
-          ENTRY="${ENTRY}    </release>"
-
-          if grep -q "<releases>" "$METAINFO_PATH"; then
-            if grep -q "version=\"${VERSION}\"" "$METAINFO_PATH"; then
-              echo "Version ${VERSION} already exists in ${METAINFO_PATH}"
-            else
-              sed -i "/<releases>/a\\${ENTRY}" "$METAINFO_PATH"
-              echo "Updated ${METAINFO_PATH}"
-            fi
-          else
-            echo "Warning: <releases> tag not found in ${METAINFO_PATH}"
-          fi
-        else
-          echo "Warning: Metainfo file not found at ${METAINFO_PATH}"
+        DATE="$(date +%F)"      # YYYY-MM-DD
+        NOTES_FILE=/tmp/release-notes.txt
+    
+        #  Guard rails 
+        if [ ! -f "$METAINFO_PATH" ]; then
+          echo "::warning::metainfo file not found: $METAINFO_PATH"
+          exit 0
         fi
-
+        if xmlstarlet sel -t -v "/component/releases/release[@version='${VERSION}']" "$METAINFO_PATH" | grep -q .; then
+          echo "Version ${VERSION} is already present – skipping."
+          exit 0
+        fi
+    
+        #  Build a fresh <release> node 
+        TMP=$(mktemp)
+        {
+          printf '<release version="%s" date="%s" type="stable">\n' "$VERSION" "$DATE"
+          printf '  <description>\n'
+          printf '    <ul>\n'
+          if [ -s "$NOTES_FILE" ]; then
+            while IFS= read -r line; do
+              line="${line#- }"                       # strip leading “- ”
+              line="$(xmlstarlet esc <<<"$line")"     # XML-escape
+              printf '      <li>%s</li>\n' "$line"
+            done < "$NOTES_FILE"
+          else
+            printf '      <li>No noteworthy changes since previous release</li>\n'
+          fi
+          printf '    </ul>\n'
+          printf '  </description>\n'
+          printf '</release>\n'
+        } >"$TMP"
+    
+        #  Insert as first child of <releases> 
+        xmlstarlet ed -L \
+          -s '/component/releases'    -t elem -n '__NEW__' -v '' \
+          "$METAINFO_PATH"
+        # Replace the placeholder with the generated XML block
+        xmlstarlet ed -L \
+          -r '/component/releases/__NEW__' -v 'release' \
+          "$METAINFO_PATH"
+        # xmlstarlet can’t pipe complex XML directly, so overwrite the new node:
+        xmlstarlet ed -L \
+          --subnode '/component/releases/release[1]' --type text -n '.' -v "$(cat "$TMP")" \
+          "$METAINFO_PATH"
+    
+        rm -f "$TMP"
+    
+        echo "Metainfo updated -> $METAINFO_PATH"
+        
     - name: Collect Changed Files
       id: files
       shell: bash
