@@ -301,6 +301,9 @@ runs:
       shell: bash
       run: |
         set -Eeuo pipefail
+
+        ssudo apt update
+        sudo apt install -y xmlstarlet appstream
     
         METAINFO="${{ inputs.metainfo-path }}"
         VERSION="${{ inputs.version }}"
@@ -360,6 +363,8 @@ runs:
             --type elem -n li -v "No changes since previous release" \
             "$METAINFO"
         fi
+
+        appstreamcli validate --pedantic "$METAINFO"
     
         echo "Metainfo updated: $METAINFO"
         
