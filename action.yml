@@ -128,10 +128,10 @@ runs:
         # Record: subject ␟ author ␟ author_email ␟ committer ␟ committer_email ␟ hash ␟ short ␟ body ␞
         sep_f=$'\x1f'
         sep_r=$'\x1e'
-        exec 3< <(LC_ALL=C git log -z --no-merges ${RANGE} \
+        exec 3< <(git log -z --no-merges ${RANGE} \
           --pretty=format:"%s%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%H%x1f%h%x1f%b%x1e")
 
-        while LC_ALL=C IFS= read -r -d "$sep_r" rec <&3; do
+        while IFS= read -r -d "$sep_r" rec <&3; do
           IFS="$sep_f" read -r subject author author_email committer committer_email hash short body <<< "$rec"
 
           # Exclude by anchored subject
@@ -165,7 +165,6 @@ runs:
           # Second pass: fallbacks like {{author-handle|committer-handle}}
           # Only recognized tokens are substituted; unknown tokens become empty.
           while [[ "$tpl" =~ \{\{([^}]+)\}\} ]]; do
-            old_tpl="$tpl"
             raw="${BASH_REMATCH[1]}"
             repl=""
             IFS='|' read -ra parts <<< "$raw"
@@ -186,8 +185,6 @@ runs:
               [ -n "$repl" ] && break
             done
             tpl="${tpl/${BASH_REMATCH[0]}/$repl}"
-            
-            [[ "$tpl" == "$old_tpl" ]] && break
           done
 
           # Cleanup: collapse spaces and remove dangling "by @" fragments if handle was empty
