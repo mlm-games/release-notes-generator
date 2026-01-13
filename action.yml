@@ -164,76 +164,54 @@ runs:
           echo "DEBUG 10: Built msg" >&2
 
           author_handle="$(gh_handle "$author" "$author_email")"
-          echo "DEBUG 11: author_handle=$author_handle" >&2
-
           committer_handle="$(gh_handle "$committer" "$committer_email")"
-          echo "DEBUG 12: committer_handle=$committer_handle" >&2
+
+          # Escape & in all fields to prevent bash substitution issues
+          # In ${var//pat/repl}, & in repl means "the matched pattern"
+          subject_safe="${subject//&/\\&}"
+          author_safe="${author//&/\\&}"
+          committer_safe="${committer//&/\\&}"
+          author_email_safe="${author_email//&/\\&}"
+          committer_email_safe="${committer_email//&/\\&}"
+          author_handle_safe="${author_handle//&/\\&}"
+          committer_handle_safe="${committer_handle//&/\\&}"
+          hash_safe="${hash//&/\\&}"
+          short_safe="${short//&/\\&}"
+          msg_safe="${msg//&/\\&}"
 
           tpl='${{ inputs.format }}'
-          echo "DEBUG 13: tpl=$tpl" >&2
 
-          # First pass: direct token replacements
-          tpl="${tpl//\{\{subject\}\}/$subject}"
-          echo "DEBUG 14: After subject sub" >&2
+          # First pass: direct token replacements (using escaped values)
+          tpl="${tpl//\{\{subject\}\}/$subject_safe}"
+          tpl="${tpl//\{\{author\}\}/$author_safe}"
+          tpl="${tpl//\{\{committer\}\}/$committer_safe}"
+          tpl="${tpl//\{\{author-email\}\}/$author_email_safe}"
+          tpl="${tpl//\{\{committer-email\}\}/$committer_email_safe}"
+          tpl="${tpl//\{\{author-handle\}\}/$author_handle_safe}"
+          tpl="${tpl//\{\{committer-handle\}\}/$committer_handle_safe}"
+          tpl="${tpl//\{\{hash\}\}/$hash_safe}"
+          tpl="${tpl//\{\{short-hash\}\}/$short_safe}"
+          tpl="${tpl//\{\{short\}\}/$short_safe}"
+          tpl="${tpl//\{\{message\}\}/$msg_safe}"
 
-          tpl="${tpl//\{\{author\}\}/$author}"
-          echo "DEBUG 15: After author sub" >&2
-
-          tpl="${tpl//\{\{committer\}\}/$committer}"
-          echo "DEBUG 16: After committer sub" >&2
-
-          tpl="${tpl//\{\{author-email\}\}/$author_email}"
-          echo "DEBUG 17: After author-email sub" >&2
-
-          tpl="${tpl//\{\{committer-email\}\}/$committer_email}"
-          echo "DEBUG 18: After committer-email sub" >&2
-
-          tpl="${tpl//\{\{author-handle\}\}/$author_handle}"
-          echo "DEBUG 19: After author-handle sub" >&2
-
-          tpl="${tpl//\{\{committer-handle\}\}/$committer_handle}"
-          echo "DEBUG 20: After committer-handle sub" >&2
-
-          tpl="${tpl//\{\{hash\}\}/$hash}"
-          echo "DEBUG 21: After hash sub" >&2
-
-          tpl="${tpl//\{\{short-hash\}\}/$short}"
-          echo "DEBUG 22: After short-hash sub" >&2
-
-          tpl="${tpl//\{\{short\}\}/$short}"
-          echo "DEBUG 23: After short sub" >&2
-
-          tpl="${tpl//\{\{message\}\}/$msg}"
-          echo "DEBUG 24: After message sub, tpl=$tpl" >&2
-
-          # Second pass: fallbacks like {{author-handle|committer-handle}}
-          # Only recognized tokens are substituted; unknown tokens become empty.
-
-          echo "DEBUG 25: Starting fallback loop" >&2
-          loop_count=0
+          # Second pass: fallbacks (also use escaped values)
           while [[ "$tpl" =~ \{\{([^}]+)\}\} ]]; do
-            loop_count=$((loop_count + 1))
-            echo "DEBUG 25a: Fallback loop iteration $loop_count, match=${BASH_REMATCH[0]}" >&2
-            if [ $loop_count -gt 20 ]; then
-              echo "DEBUG 25b: Breaking fallback loop - too many iterations" >&2
-              break
-            fi
             old_tpl="$tpl"
             raw="${BASH_REMATCH[1]}"
             repl=""
             IFS='|' read -ra parts <<< "$raw"
             for part in "${parts[@]}"; do
               case "$part" in
-                subject)            repl="$subject" ;;
-                author)             repl="$author" ;;
-                committer)          repl="$committer" ;;
-                author-email)       repl="$author_email" ;;
-                committer-email)    repl="$committer_email" ;;
-                author-handle)      repl="$author_handle" ;;
-                committer-handle)   repl="$committer_handle" ;;
-                hash)               repl="$hash" ;;
-                short|short-hash)   repl="$short" ;;
-                message)            repl="$msg" ;;
+                subject)            repl="$subject_safe" ;;
+                author)             repl="$author_safe" ;;
+                committer)          repl="$committer_safe" ;;
+                author-email)       repl="$author_email_safe" ;;
+                committer-email)    repl="$committer_email_safe" ;;
+                author-handle)      repl="$author_handle_safe" ;;
+                committer-handle)   repl="$committer_handle_safe" ;;
+                hash)               repl="$hash_safe" ;;
+                short|short-hash)   repl="$short_safe" ;;
+                message)            repl="$msg_safe" ;;
                 *)                  ;;
               esac
               [ -n "$repl" ] && break
@@ -427,7 +405,7 @@ runs:
             "$METAINFO"
         fi
 
-        appstreamcli validate --pedantic "$METAINFO"
+        appstreamcli validate --pedantic "$METAINFO" # For validation (similar to flathub's)
     
         echo "Metainfo updated: $METAINFO"
         
