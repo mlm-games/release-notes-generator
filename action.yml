@@ -124,11 +124,19 @@ runs:
         RELEASE_NOTES=""
         RELEASE_NAME=""
 
+        echo "==== RAW GIT OUTPUT ===="
+        git log --no-merges ${RANGE} \
+          --pretty=format:"RECORD_START%nsubject:%s%nauthor:%an%nRECORD_END%n" | head -50
+        echo "==== END RAW OUTPUT ===="
+
+        echo "Range: ${RANGE}"
+        echo "Commit count: $(git rev-list --count --no-merges ${RANGE})"
+
         # Robust record parsing using ASCII unit/record separators to avoid NUL-in-variable issues.
         # Record: subject ␟ author ␟ author_email ␟ committer ␟ committer_email ␟ hash ␟ short ␟ body ␞
         sep_f=$'\x1f'
         sep_r=$'\x1e'
-        exec 3< <(git log --no-merges ${RANGE} \
+        exec 3< <(git log -z --no-merges ${RANGE} \
           --pretty=format:"%s%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%H%x1f%h%x1f%b%x1e")
 
         while LC_ALL=C IFS= read -r -d "$sep_r" rec <&3; do
