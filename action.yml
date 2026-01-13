@@ -137,7 +137,7 @@ runs:
         sep_f=$'\x1f'
         sep_r=$'\x1e'
         exec 3< <(git log -z --no-merges ${RANGE} \
-          --pretty=format:"%s%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%H%x1f%h%x1f%b%x1e")
+          --pretty=format:"%s%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%H%x1f%h%x1f%b%x1e" | tr -d '\0')
 
         while LC_ALL=C IFS= read -r -d "$sep_r" rec <&3; do
           IFS="$sep_f" read -r subject author author_email committer committer_email hash short body <<< "$rec"
