@@ -15,7 +15,7 @@ inputs:
     required: false
     default: 'CHANGELOG.md'
   version-file-path:
-    description: 'Path to version file (e.g., fastlane/vercode.txt or changelogs/123.txt)'
+    description: 'Path to version file (e.g., fastlane changelogs/123.txt)'
     required: false
     default: ''
   version-code:
@@ -27,7 +27,7 @@ inputs:
     required: false
     default: ''
   format:
-    description: 'Line format for each commit. Tokens: {{subject}}, {{author}}, {{committer}}, {{author-email}}, {{committer-email}}, {{author-handle}}, {{committer-handle}}, {{hash}}, {{short-hash}}, {{message}}'
+    description: 'Line format for each commit'
     required: false
     default: '- {{subject}}'
   debug:
@@ -35,9 +35,9 @@ inputs:
     required: false
     default: 'false'
   exclude-patterns:
-    description: 'Comma-separated patterns to exclude from subjects (anchored)'
+    description: 'Comma-separated subject prefixes/patterns to exclude (anchored)'
     required: false
-    default: 'Update version to,Merge ,Auto-generate changelog'
+    default: 'chore:,ci:,docs:,build:,style:,test:,Bump version,bump version,Update release notes,Update version,Merge pull request,Merge branch,[skip ci],dependabot'
   vercode-prefix:
     description: 'Prefix before version in CHANGELOG header (e.g., "v")'
     required: false
@@ -49,17 +49,25 @@ inputs:
   commit-message:
     description: 'Commit message template'
     required: false
-    default: 'Update release notes for v{{version}}'
+    default: 'docs: update release notes for v{{version}} [skip ci]'
+  fallback-notes:
+    description: 'Text used when no commits match'
+    required: false
+    default: '- No user-facing changes were mentioned since previous release'
 
 outputs:
   release-notes:
     description: 'Generated release notes'
+    value: ${{ steps.generate.outputs.release-notes }}
   release-name:
     description: 'Release name (latest commit subject)'
+    value: ${{ steps.generate.outputs.release-name }}
   changelog-updated:
     description: 'Whether CHANGELOG.md was updated'
+    value: ${{ steps.changelog.outputs.changelog-updated }}
   files-changed:
     description: 'List of files that were changed'
+    value: ${{ steps.files.outputs.files-changed }}
 
 runs:
   using: 'composite'
@@ -70,31 +78,36 @@ runs:
       run: |
         set -Eeuo pipefail
 
-        echo "DEBUG 0: Starting script" >&2
-
         HEAD_REF="${{ inputs.head-ref }}"
+        FALLBACK="${{ inputs.fallback-notes }}"
 
-        # Compute commit range:
-        # - If HEAD is exactly at a tag, use previous tag..HEAD
-        # - Else if a latest tag exists, use latest tag..HEAD
-        # - Else, use all commits reachable from HEAD (first release)
-        LATEST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
-        HEAD_TAG="$(git describe --tags --exact-match "${HEAD_REF}" 2>/dev/null || true)"
-        PREV_TAG=""
-        if [ -n "$HEAD_TAG" ]; then
-          PREV_TAG="$(git describe --tags --abbrev=0 --exclude="$HEAD_TAG" 2>/dev/null || true)"
+        # Best-effort: need full history + tags (callers should use fetch-depth: 0)
+        git fetch --tags --force 2>/dev/null || true
+        # Unshallow if someone checked out shallow
+        if git rev-parse --is-shallow-repository 2>/dev/null | grep -qx true; then
+          git fetch --unshallow --tags --force 2>/dev/null || git fetch --deepen=2147483647 --tags 2>/dev/null || true
         fi
 
-        if [ -n "$HEAD_TAG" ] && [ -n "$PREV_TAG" ]; then
+        # Resolve previous tag: prefer version-like tags over the current head tag
+        HEAD_TAG="$(git describe --tags --exact-match "${HEAD_REF}" 2>/dev/null || true)"
+        LATEST_TAG="$(git describe --tags --abbrev=0 "${HEAD_REF}" 2>/dev/null || true)"
+        PREV_TAG=""
+        if [ -n "$HEAD_TAG" ]; then
+          PREV_TAG="$(git describe --tags --abbrev=0 --exclude="$HEAD_TAG" "${HEAD_REF}^" 2>/dev/null || true)"
+          if [ -z "$PREV_TAG" ]; then
+            PREV_TAG="$(git tag --list --sort=-v:refname | grep -Ev "^${HEAD_TAG}$" | head -n1 || true)"
+          fi
+        elif [ -n "$LATEST_TAG" ]; then
+          PREV_TAG="$LATEST_TAG"
+        fi
+
+        if [ -n "$PREV_TAG" ]; then
           RANGE="${PREV_TAG}..${HEAD_REF}"
-        elif [ -z "$HEAD_TAG" ] && [ -n "$LATEST_TAG" ]; then
-          RANGE="${LATEST_TAG}..${HEAD_REF}"
         else
           RANGE="${HEAD_REF}"
         fi
 
-        echo "DEBUG 1: Range=$RANGE" >&2
-
+        # Build anchored exclude regex
         RAW="${{ inputs.exclude-patterns }}"
         IFS=',' read -ra EX_PATTERNS <<< "$RAW"
         EX_REGEX=""
@@ -106,19 +119,12 @@ runs:
           EX_REGEX="${EX_REGEX:+${EX_REGEX}|}${ep}"
         done
 
-        echo "DEBUG 2: EX_REGEX=$EX_REGEX" >&2
-
         gh_handle() {
           local name="$1" email="$2" lp handle=""
           if [[ "$email" =~ ^([^@]+)@users\.noreply\.github\.com$ ]]; then
             lp="${BASH_REMATCH[1]}"
-            if [[ "$lp" == *"+"* ]]; then
-              handle="${lp#*+}"
-            else
-              handle="$lp"
-            fi
+            if [[ "$lp" == *"+"* ]]; then handle="${lp#*+}"; else handle="$lp"; fi
           fi
-          # Fallback if name looks like a handle or a bot name
           if [ -z "$handle" ] && [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}(\[bot\])?$ ]]; then
             handle="${name%\[bot\]}"
           fi
@@ -127,47 +133,29 @@ runs:
 
         RELEASE_NOTES=""
         RELEASE_NAME=""
-
-        # Robust record parsing using ASCII unit/record separators to avoid NUL-in-variable issues.
-        # Record: subject ␟ author ␟ author_email ␟ committer ␟ committer_email ␟ hash ␟ short ␟ body ␞
         sep_f=$'\x1f'
         sep_r=$'\x1e'
 
-        echo "DEBUG 3: About to run git log" >&2
+        # No -z: custom RS only (avoids NUL + RS double-separator bugs)
+        while IFS= read -r -d "$sep_r" rec; do
+          [ -z "$rec" ] && continue
+          # Strip any accidental leading NULs
+          rec="${rec#"${rec%%[!$' \t\n\r\0']*}"}"
 
-        exec 3< <(git log -z --no-merges ${RANGE} \
-          --pretty=format:"%s%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%H%x1f%h%x1f%b%x1e")
-
-        echo "DEBUG 4: git log started, entering loop" >&2
-
-        commit_num=0
-        while IFS= read -r -d "$sep_r" rec <&3; do
-          commit_num=$((commit_num + 1))
-          echo "DEBUG 5: Processing commit #$commit_num, rec length=${#rec}" >&2
-
-          IFS="$sep_f" read -r subject author author_email committer committer_email hash short body <<< "$rec"
-          echo "DEBUG 6: Parsed fields, subject=${subject:0:40}..." >&2
+          IFS="$sep_f" read -r subject author author_email committer committer_email hash short body <<< "$rec" || true
+          [ -z "${subject:-}" ] && continue
 
           if [ -n "$EX_REGEX" ] && printf '%s' "$subject" | grep -Eq "$EX_REGEX"; then
-            echo "DEBUG 7: Excluded by regex" >&2
             continue
           fi
-          echo "DEBUG 7: Not excluded" >&2
 
           subject="$(printf '%s' "$subject" | tr -d '\r' | sed -E 's/[[:space:]]+$//')"
-          echo "DEBUG 8: Normalized subject" >&2
-
-          body="$(printf '%s' "$body" | tr '\r\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/[[:space:]]+$//')"
-          echo "DEBUG 9: Normalized body" >&2
-
+          body="$(printf '%s' "${body:-}" | tr '\r\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/[[:space:]]+$//')"
           msg="$(printf '%s %s' "$subject" "$body" | sed -E 's/[[:space:]]+/ /g; s/[[:space:]]+$//')"
-          echo "DEBUG 10: Built msg" >&2
 
           author_handle="$(gh_handle "$author" "$author_email")"
           committer_handle="$(gh_handle "$committer" "$committer_email")"
 
-          # Escape & in all fields to prevent bash substitution issues
-          # In ${var//pat/repl}, & in repl means "the matched pattern"
           subject_safe="${subject//&/\\&}"
           author_safe="${author//&/\\&}"
           committer_safe="${committer//&/\\&}"
@@ -180,8 +168,6 @@ runs:
           msg_safe="${msg//&/\\&}"
 
           tpl='${{ inputs.format }}'
-
-          # First pass: direct token replacements (using escaped values)
           tpl="${tpl//\{\{subject\}\}/$subject_safe}"
           tpl="${tpl//\{\{author\}\}/$author_safe}"
           tpl="${tpl//\{\{committer\}\}/$committer_safe}"
@@ -194,7 +180,6 @@ runs:
           tpl="${tpl//\{\{short\}\}/$short_safe}"
           tpl="${tpl//\{\{message\}\}/$msg_safe}"
 
-          # Second pass: fallbacks (also use escaped values)
           while [[ "$tpl" =~ \{\{([^}]+)\}\} ]]; do
             old_tpl="$tpl"
             raw="${BASH_REMATCH[1]}"
@@ -212,50 +197,45 @@ runs:
                 hash)               repl="$hash_safe" ;;
                 short|short-hash)   repl="$short_safe" ;;
                 message)            repl="$msg_safe" ;;
-                *)                  ;;
               esac
               [ -n "$repl" ] && break
             done
             tpl="${tpl/${BASH_REMATCH[0]}/$repl}"
             [[ "$tpl" == "$old_tpl" ]] && break
           done
-          echo "DEBUG 26: Fallback loop done" >&2
 
           tpl="$(printf '%s' "$tpl" \
                 | sed -E 's/[[:space:]]+/ /g; s/^[[:space:]]+|[[:space:]]+$//g' \
                 | sed -E 's/[[:space:]]+by[[:space:]]+@$//; s/@$//')"
-          echo "DEBUG 27: After cleanup, tpl=$tpl" >&2
 
-          # If the user forgot a bullet, keep consistent bullets
           if ! printf '%s' "$tpl" | grep -qE '^[*-] '; then
             tpl="- $tpl"
           fi
-          echo "DEBUG 28: After bullet check, tpl=$tpl" >&2
 
           [ -n "$tpl" ] && RELEASE_NOTES+="${tpl}"$'\n'
           [ -z "$RELEASE_NAME" ] && RELEASE_NAME="$subject"
-          echo "DEBUG 29: Commit #$commit_num done" >&2
-        done
-        echo "DEBUG 30: Loop exited after $commit_num commits" >&2
-        exec 3<&-
+        done < <(git log --no-merges ${RANGE} \
+          --pretty=format:"%s%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%H%x1f%h%x1f%b%x1e" 2>/dev/null || true)
 
-        # Trim trailing newline
-        RELEASE_NOTES="${RELEASE_NOTES%$'\n'}"
-
-        echo "DEBUG 31: Final RELEASE_NOTES length=${#RELEASE_NOTES}" >&2
+        # Trim + fallback if empty/whitespace-only
+        RELEASE_NOTES="$(printf '%s' "$RELEASE_NOTES" | sed -E 's/[[:space:]]+$//')"
+        if [ -z "$RELEASE_NOTES" ]; then
+          RELEASE_NOTES="$FALLBACK"
+        fi
+        [ -z "$RELEASE_NAME" ] && RELEASE_NAME="Release ${{ inputs.version }}"
 
         if [ "${{ inputs.debug }}" = "true" ]; then
-          echo "Latest tag: ${LATEST_TAG}"
+          echo "Latest tag: ${LATEST_TAG:-<none>}"
           echo "Head ref: ${HEAD_REF}"
-          echo "Head tag: ${HEAD_TAG}"
-          echo "Prev tag: ${PREV_TAG}"
+          echo "Head tag: ${HEAD_TAG:-<none>}"
+          echo "Prev tag: ${PREV_TAG:-<none>}"
           echo "Range: ${RANGE}"
           echo "Exclude regex: ${EX_REGEX:-<none>}"
+          echo "Shallow: $(git rev-parse --is-shallow-repository 2>/dev/null || echo unknown)"
           echo "Preview:"
-          printf '%s\n' "$RELEASE_NOTES" | head -20
+          printf '%s\n' "$RELEASE_NOTES" | head -30
         fi
 
-        # Output through GITHUB_OUTPUT (safe custom delimiter)
         DELIM="END_OF_RELEASE_NOTES_$(date +%s%N)_$RANDOM"
         {
           printf 'release-notes<<%s\n' "$DELIM"
@@ -264,9 +244,8 @@ runs:
           printf 'release-name=%s\n' "$RELEASE_NAME"
         } >> "$GITHUB_OUTPUT"
 
-        # Save to file for later steps
+        # Always non-empty file for downstream body_path consumers
         printf '%s\n' "$RELEASE_NOTES" > /tmp/release-notes.txt
-        echo "DEBUG 32: Script complete" >&2
 
     - name: Update CHANGELOG.md
       if: inputs.changelog-path != ''
@@ -280,13 +259,7 @@ runs:
         HEADER_LINE="## ${PREFIX}${VERSION}"
         UPDATED="false"
 
-        write_notes() {
-          if [ -s /tmp/release-notes.txt ]; then
-            cat /tmp/release-notes.txt
-          else
-            echo "- No changes since previous release"
-          fi
-        }
+        write_notes() { cat /tmp/release-notes.txt; }
 
         if [ -f "$CHANGELOG_PATH" ]; then
           if grep -Fq "$HEADER_LINE" "$CHANGELOG_PATH"; then
@@ -302,7 +275,6 @@ runs:
             } > /tmp/new-changelog.md
             mv /tmp/new-changelog.md "$CHANGELOG_PATH"
             UPDATED="true"
-            echo "Updated ${CHANGELOG_PATH}"
           fi
         else
           {
@@ -314,9 +286,7 @@ runs:
             echo ""
           } > "$CHANGELOG_PATH"
           UPDATED="true"
-          echo "Created ${CHANGELOG_PATH}"
         fi
-
         echo "changelog-updated=$UPDATED" >> "$GITHUB_OUTPUT"
 
     - name: Update Version File
@@ -327,13 +297,11 @@ runs:
         VERSION_FILE="${{ inputs.version-file-path }}"
         VERSION_CODE="${{ inputs.version-code }}"
         mkdir -p "$(dirname "$VERSION_FILE")"
-
         if [[ "$VERSION_FILE" == *"/changelogs/"* ]]; then
           cat /tmp/release-notes.txt > "$VERSION_FILE"
         else
           echo "$VERSION_CODE" > "$VERSION_FILE"
         fi
-        echo "Updated version file: $VERSION_FILE"
 
     - name: Update Flathub Metainfo
       if: inputs.metainfo-path != ''
@@ -408,34 +376,22 @@ runs:
         appstreamcli validate --pedantic "$METAINFO" # For validation (similar to flathub's)
     
         echo "Metainfo updated: $METAINFO"
-        
+
     - name: Collect Changed Files
       id: files
       shell: bash
       run: |
         set -Eeuo pipefail
         CHANGED_FILES=""
-
         if [ "${{ steps.changelog.outputs.changelog-updated }}" = "true" ]; then
           CHANGED_FILES="${{ inputs.changelog-path }}"
         fi
-
         if [ -n "${{ inputs.version-file-path }}" ] && [ -n "${{ inputs.version-code }}" ]; then
-          if [ -n "$CHANGED_FILES" ]; then
-            CHANGED_FILES="$CHANGED_FILES,${{ inputs.version-file-path }}"
-          else
-            CHANGED_FILES="${{ inputs.version-file-path }}"
-          fi
+          CHANGED_FILES="${CHANGED_FILES:+$CHANGED_FILES,}${{ inputs.version-file-path }}"
         fi
-
         if [ -n "${{ inputs.metainfo-path }}" ] && [ -f "${{ inputs.metainfo-path }}" ]; then
-          if [ -n "$CHANGED_FILES" ]; then
-            CHANGED_FILES="$CHANGED_FILES,${{ inputs.metainfo-path }}"
-          else
-            CHANGED_FILES="${{ inputs.metainfo-path }}"
-          fi
+          CHANGED_FILES="${CHANGED_FILES:+$CHANGED_FILES,}${{ inputs.metainfo-path }}"
         fi
-
         echo "files-changed=$CHANGED_FILES" >> "$GITHUB_OUTPUT"
 
     - name: Commit Changes
@@ -443,19 +399,14 @@ runs:
       shell: bash
       run: |
         set -Eeuo pipefail
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Actions"
-
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
         IFS=',' read -ra FILES <<< "${{ steps.files.outputs.files-changed }}"
         for file in "${FILES[@]}"; do
-          if [ -f "$file" ]; then
-            git add "$file"
-          fi
+          [ -f "$file" ] && git add "$file"
         done
-
         COMMIT_MSG="${{ inputs.commit-message }}"
         COMMIT_MSG="${COMMIT_MSG//\{\{version\}\}/${{ inputs.version }}}"
-
         git commit -m "$COMMIT_MSG" || echo "No changes to commit"
         git push || echo "Nothing to push"
 
