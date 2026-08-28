@@ -44,6 +44,14 @@ jobs:
           <?xml version="1.0" encoding="UTF-8"?>
           <component type="desktop-application">
             <id>com.example.test</id>
+            <name>Test App</name>
+            <summary>Test application for CI</summary>
+            <metadata_license>CC0-1.0</metadata_license>
+            <project_license>MIT</project_license>
+            <description>
+              <p>A minimal test app for release-notes-generator.</p>
+            </description>
+            <launchable type="desktop-id">com.example.test.desktop</launchable>
             <releases>
             </releases>
           </component>
